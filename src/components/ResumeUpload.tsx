@@ -1,12 +1,14 @@
 import { useRef, useState } from 'react';
-import { FileText, Upload, X } from 'lucide-react';
+import { FileText, Upload, X, Loader2 } from 'lucide-react';
 
 interface ResumeUploadProps {
   onFileSelected: (file: File | null) => void;
   disabled?: boolean;
+  parsing?: boolean;
+  parseError?: string | null;
 }
 
-export function ResumeUpload({ onFileSelected, disabled }: ResumeUploadProps) {
+export function ResumeUpload({ onFileSelected, disabled, parsing, parseError }: ResumeUploadProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [fileName, setFileName] = useState<string | null>(null);
 
@@ -34,7 +36,7 @@ export function ResumeUpload({ onFileSelected, disabled }: ResumeUploadProps) {
         type="file"
         accept="application/pdf,.pdf"
         className="hidden"
-        disabled={disabled}
+        disabled={disabled || parsing}
         onChange={(e) => handleFile(e.target.files?.[0])}
       />
 
@@ -42,24 +44,39 @@ export function ResumeUpload({ onFileSelected, disabled }: ResumeUploadProps) {
         <button
           type="button"
           onClick={() => inputRef.current?.click()}
-          disabled={disabled}
+          disabled={disabled || parsing}
           className="w-full flex items-center justify-center gap-3 rounded-xl border-2 border-dashed border-slate-600 px-4 py-6 text-slate-400 hover:border-sky-500 hover:text-sky-400 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
         >
           <Upload className="w-5 h-5" />
           <span className="text-sm font-medium">Upload your resume (PDF)</span>
         </button>
       ) : (
-        <div className="w-full flex items-center gap-3 rounded-xl border border-slate-700 bg-slate-800/50 px-4 py-3">
-          <FileText className="w-5 h-5 text-sky-400 shrink-0" />
-          <span className="text-sm text-slate-200 truncate flex-1">{fileName}</span>
-          <button
-            type="button"
-            onClick={handleRemove}
-            disabled={disabled}
-            className="text-slate-500 hover:text-red-400 transition-colors disabled:opacity-40"
-          >
-            <X className="w-4 h-4" />
-          </button>
+        <div className="w-full flex flex-col gap-2">
+          <div className="w-full flex items-center gap-3 rounded-xl border border-slate-700 bg-slate-800/50 px-4 py-3">
+            <FileText className="w-5 h-5 text-sky-400 shrink-0" />
+            <span className="text-sm text-slate-200 truncate flex-1">{fileName}</span>
+            {parsing ? (
+              <Loader2 className="w-4 h-4 text-sky-400 animate-spin shrink-0" />
+            ) : (
+              <button
+                type="button"
+                onClick={handleRemove}
+                disabled={disabled || parsing}
+                className="text-slate-500 hover:text-red-400 transition-colors disabled:opacity-40"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+          {parsing && (
+            <p className="text-xs text-sky-400 flex items-center gap-1.5">
+              <Loader2 className="w-3 h-3 animate-spin" />
+              Analyzing resume…
+            </p>
+          )}
+          {parseError && !parsing && (
+            <p className="text-xs text-red-400">{parseError}</p>
+          )}
         </div>
       )}
     </div>

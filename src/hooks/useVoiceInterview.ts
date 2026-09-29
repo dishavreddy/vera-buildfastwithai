@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { CandidateProfile, InterviewReport } from '@/types/interview';
 
 export type InterviewState = 'idle' | 'listening' | 'thinking' | 'speaking';
 
@@ -10,9 +11,19 @@ export interface TranscriptEntry {
 
 interface UseVoiceInterviewOptions {
   messagesRef: React.MutableRefObject<{ role: string; content: string }[]>;
+  systemPrompt: string;
+  profile: CandidateProfile | null;
+  onReportReady: (report: InterviewReport) => void;
+  onReportError: (msg: string) => void;
 }
 
-export function useVoiceInterview({ messagesRef }: UseVoiceInterviewOptions) {
+export function useVoiceInterview({
+  messagesRef,
+  systemPrompt,
+  profile,
+  onReportReady,
+  onReportError,
+}: UseVoiceInterviewOptions) {
   const [state, setState] = useState<InterviewState>('idle');
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -25,8 +36,23 @@ export function useVoiceInterview({ messagesRef }: UseVoiceInterviewOptions) {
   const entryIdRef = useRef(0);
   const stateRef = useRef<InterviewState>('idle');
   const abortRef = useRef(false);
+  const systemPromptRef = useRef(systemPrompt);
+  const profileRef = useRef(profile);
+  const transcriptRef = useRef<TranscriptEntry[]>([]);
+  const generatingReportRef = useRef(false);
 
-  // Keep stateRef in sync
+  useEffect(() => {
+    systemPromptRef.current = systemPrompt;
+  }, [systemPrompt]);
+
+  useEffect(() => {
+    profileRef.current = profile;
+  }, [profile]);
+
+  useEffect(() => {
+    transcriptRef.current = transcript;
+  }, [transcript]);
+
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
@@ -37,7 +63,11 @@ export function useVoiceInterview({ messagesRef }: UseVoiceInterviewOptions) {
   }, []);
 
   const addTranscript = useCallback((role: 'user' | 'assistant', text: string) => {
-    setTranscript((prev) => [...prev, { id: ++entryIdRef.current, role, text }]);
+    setTranscript((prev) => {
+      const next = [...prev, { id: ++entryIdRef.current, role, text }];
+      transcriptRef.current = next;
+      return next;
+    });
   }, []);
 
   const stopSpeaking = useCallback(() => {
@@ -53,7 +83,6 @@ export function useVoiceInterview({ messagesRef }: UseVoiceInterviewOptions) {
       return;
     }
 
-    // Abort any previous instance
     if (recognitionRef.current) {
       try {
         recognitionRef.current.abort();
@@ -86,7 +115,6 @@ export function useVoiceInterview({ messagesRef }: UseVoiceInterviewOptions) {
         }
       }
 
-      // Interruption: if user speaks while AI is talking, cancel speech immediately
       if (isSpeakingRef.current && (interim.length > 0 || final.length > 0)) {
         stopSpeaking();
       }
@@ -97,7 +125,7 @@ export function useVoiceInterview({ messagesRef }: UseVoiceInterviewOptions) {
     };
 
     recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-      if (event.error === 'no-speech') return; // benign — restart will handle
+      if (event.error === 'no-speech') return;
       if (event.error === 'aborted') return;
       if (event.error === 'not-allowed') {
         setError('Microphone access was denied. Please allow mic access and try again.');
@@ -109,7 +137,6 @@ export function useVoiceInterview({ messagesRef }: UseVoiceInterviewOptions) {
     };
 
     recognition.onend = () => {
-      // If we were listening and have collected speech, process it
       if (abortRef.current) {
         abortRef.current = false;
         shouldRestartRef.current = false;
@@ -122,7 +149,6 @@ export function useVoiceInterview({ messagesRef }: UseVoiceInterviewOptions) {
         return;
       }
 
-      // Auto-restart for continuous listening (unless we're in thinking/speaking/idle)
       if (shouldRestartRef.current && stateRef.current === 'listening') {
         try {
           recognition.start();
@@ -155,7 +181,10 @@ export function useVoiceInterview({ messagesRef }: UseVoiceInterviewOptions) {
         const response = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ messages: messagesRef.current }),
+          body: JSON.stringify({
+            messages: messagesRef.current,
+            systemPrompt: systemPromptRef.current,
+          }),
         });
 
         if (!response.ok) {
@@ -187,7 +216,6 @@ export function useVoiceInterview({ messagesRef }: UseVoiceInterviewOptions) {
         return;
       }
 
-      // Cancel any ongoing speech first
       window.speechSynthesis.cancel();
 
       const utterance = new SpeechSynthesisUtterance(text);
@@ -195,7 +223,6 @@ export function useVoiceInterview({ messagesRef }: UseVoiceInterviewOptions) {
       utterance.pitch = 1.0;
       utterance.volume = 1.0;
 
-      // Try to pick a natural-sounding English voice
       const voices = window.speechSynthesis.getVoices();
       const preferred =
         voices.find((v) => v.name.includes('Google US English')) ||
@@ -211,8 +238,7 @@ export function useVoiceInterview({ messagesRef }: UseVoiceInterviewOptions) {
 
       utterance.onend = () => {
         isSpeakingRef.current = false;
-        if (abortRef.current) return; // interrupted by user — don't auto-resume
-        // Go back to listening after AI finishes
+        if (abortRef.current) return;
         startListening();
       };
 
@@ -230,12 +256,55 @@ export function useVoiceInterview({ messagesRef }: UseVoiceInterviewOptions) {
     [startListening, updateState],
   );
 
+  const generateReport = useCallback(async () => {
+    if (generatingReportRef.current) return;
+    generatingReportRef.current = true;
+
+    const currentTranscript = transcriptRef.current;
+    if (currentTranscript.length === 0) {
+      generatingReportRef.current = false;
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          transcript: currentTranscript,
+          profile: profileRef.current,
+        }),
+      });
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        onReportError(errData.error || `Server error ${response.status}`);
+        return;
+      }
+
+      const data = await response.json();
+      if (data.report) {
+        onReportReady(data.report);
+      } else {
+        onReportError('No report returned from server.');
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      onReportError(msg);
+    } finally {
+      generatingReportRef.current = false;
+    }
+  }, [onReportReady, onReportError]);
+
   const start = useCallback(() => {
     setError(null);
     setTranscript([]);
+    transcriptRef.current = [];
 
-    // Initial greeting from Vera
-    const greeting = "Hi, I'm Vera. Thanks for joining today. To get started, could you tell me a bit about yourself and what role you're interviewing for?";
+    const greeting = profileRef.current
+      ? `Hi ${profileRef.current.name || 'there'}, I'm Vera. I've reviewed your resume and I can see you have experience with ${(profileRef.current.keyTechnologies || profileRef.current.skills || []).slice(0, 3).join(', ')}. To get started, could you walk me through your background and what kind of role you're looking for?`
+      : "Hi, I'm Vera. Thanks for joining today. To get started, could you tell me a bit about yourself and what role you're interviewing for?";
+
     addTranscript('assistant', greeting);
     messagesRef.current = [{ role: 'assistant', content: greeting }];
     speakReply(greeting);
@@ -255,7 +324,10 @@ export function useVoiceInterview({ messagesRef }: UseVoiceInterviewOptions) {
     }
     window.speechSynthesis.cancel();
     updateState('idle');
-  }, [updateState]);
+
+    // Generate the end-of-interview report
+    generateReport();
+  }, [generateReport, updateState]);
 
   useEffect(() => {
     return () => {
@@ -272,7 +344,6 @@ export function useVoiceInterview({ messagesRef }: UseVoiceInterviewOptions) {
     };
   }, []);
 
-  // Check support on mount
   useEffect(() => {
     const supported =
       Boolean(window.SpeechRecognition || window.webkitSpeechRecognition) && 'speechSynthesis' in window;
