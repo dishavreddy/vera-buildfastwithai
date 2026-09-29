@@ -1,4 +1,14 @@
+import { useState } from 'react';
+import { motion } from 'framer-motion';
+import {
+  CheckCircle2, AlertTriangle, BookOpen, ChevronDown, ChevronUp,
+  Download, Sparkles, TrendingUp, FileText,
+} from 'lucide-react';
 import type { InterviewReport, CandidateProfile } from '@/types/interview';
+import { Card } from '@/components/ui/Card';
+import { Chip } from '@/components/ui/Chip';
+import { Button } from '@/components/ui/Button';
+import { ScoreGauge } from '@/components/ui/ScoreGauge';
 
 interface ReportViewProps {
   report: InterviewReport;
@@ -7,90 +17,159 @@ interface ReportViewProps {
   onRestart: () => void;
 }
 
-function ListSection({ title, items, color }: { title: string; items: string[]; color: string }) {
+function ListCard({
+  title, items, icon, accent,
+}: {
+  title: string;
+  items: string[];
+  icon: React.ReactNode;
+  accent: string;
+}) {
   if (!items || items.length === 0) return null;
   return (
-    <div>
-      <h3 className={`text-sm font-semibold mb-2 ${color}`}>{title}</h3>
-      <ul className="space-y-1">
+    <Card>
+      <div className="flex items-center gap-2 mb-3">
+        <span className={accent}>{icon}</span>
+        <h3 className="text-sm font-semibold text-text-primary">{title}</h3>
+      </div>
+      <ul className="space-y-2">
         {items.map((item, i) => (
-          <li key={i} className="text-sm text-slate-300 flex gap-2">
-            <span className="text-slate-600">•</span>
+          <li key={i} className="text-sm text-text-secondary flex gap-2 leading-relaxed">
+            <span className={`shrink-0 ${accent}`}>•</span>
             <span>{item}</span>
           </li>
         ))}
       </ul>
-    </div>
-  );
-}
-
-function RatingRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex flex-col gap-1 py-2 border-b border-slate-800">
-      <span className="text-xs uppercase tracking-wide text-slate-500">{label}</span>
-      <span className="text-sm text-slate-200">{value || '—'}</span>
-    </div>
+    </Card>
   );
 }
 
 export function ReportView({ report, profile, transcript, onRestart }: ReportViewProps) {
+  const [showTranscript, setShowTranscript] = useState(false);
+  const today = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+  const gauges = [
+    { label: 'Communication', value: report.communication },
+    { label: 'Technical Knowledge', value: report.technicalKnowledge },
+    { label: 'Problem Solving', value: report.problemSolving },
+    { label: 'Project Understanding', value: report.projectUnderstanding },
+  ];
+
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
-      <div className="max-w-2xl mx-auto px-6 py-10 flex flex-col gap-8">
+    <div className="min-h-screen bg-background text-text-primary">
+      <div className="max-w-3xl mx-auto px-6 py-10 flex flex-col gap-6 animate-fade-in">
         {/* Header */}
-        <div>
-          <h1 className="text-2xl font-bold">Interview Report</h1>
-          <p className="text-sm text-slate-500 mt-1">
-            {profile ? `Candidate: ${profile.name || 'Unknown'}` : 'General interview'}
-          </p>
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <div className="flex items-center gap-2 mb-2">
+              <Sparkles className="w-4 h-4 text-accent-400" />
+              <span className="text-xs font-medium text-accent-300 uppercase tracking-wide">Interview Report</span>
+            </div>
+            <h1 className="text-3xl font-bold tracking-tight">
+              {profile?.name || 'Your Interview'}
+            </h1>
+            <p className="text-sm text-text-muted mt-1">{today}</p>
+          </div>
+          <div className="flex gap-2 no-print">
+            <Button
+              variant="secondary"
+              size="md"
+              onClick={() => window.print()}
+            >
+              <Download className="w-4 h-4" />
+              Download
+            </Button>
+            <Button variant="primary" size="md" onClick={onRestart}>
+              <TrendingUp className="w-4 h-4" />
+              New Interview
+            </Button>
+          </div>
         </div>
 
-        {/* Ratings */}
-        <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-5">
-          <h2 className="text-base font-semibold mb-3">Evaluation</h2>
-          <RatingRow label="Communication" value={report.communication} />
-          <RatingRow label="Technical Knowledge" value={report.technicalKnowledge} />
-          <RatingRow label="Problem Solving" value={report.problemSolving} />
-          <RatingRow label="Project Understanding" value={report.projectUnderstanding} />
-        </div>
+        {/* Score overview */}
+        <Card>
+          <h2 className="text-base font-semibold mb-4">Evaluation Overview</h2>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            {gauges.map((g) => (
+              <ScoreGauge key={g.label} label={g.label} value={g.value} />
+            ))}
+          </div>
+        </Card>
 
         {/* Lists */}
-        <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-5 flex flex-col gap-5">
-          <ListSection title="Strengths" items={report.strengths} color="text-emerald-400" />
-          <ListSection title="Weaknesses" items={report.weaknesses} color="text-amber-400" />
-          <ListSection title="Topics to Study" items={report.topicsToStudy} color="text-sky-400" />
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <ListCard
+            title="Strengths"
+            items={report.strengths}
+            icon={<CheckCircle2 className="w-4 h-4" />}
+            accent="text-success-400"
+          />
+          <ListCard
+            title="Areas to Improve"
+            items={report.weaknesses}
+            icon={<AlertTriangle className="w-4 h-4" />}
+            accent="text-warning-400"
+          />
+          <ListCard
+            title="Recommended Practice"
+            items={report.topicsToStudy}
+            icon={<BookOpen className="w-4 h-4" />}
+            accent="text-accent-300"
+          />
         </div>
+
+        {/* Topics to study as chips */}
+        {report.topicsToStudy && report.topicsToStudy.length > 0 && (
+          <Card>
+            <h3 className="text-sm font-semibold text-text-primary mb-3">Topics to Study</h3>
+            <div className="flex flex-wrap gap-2">
+              {report.topicsToStudy.map((topic, i) => (
+                <Chip key={i} color="accent">{topic}</Chip>
+              ))}
+            </div>
+          </Card>
+        )}
 
         {/* Preparation suggestion */}
         {report.preparationSuggestion && (
-          <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-5">
-            <h2 className="text-base font-semibold mb-2">Personalized Preparation Suggestion</h2>
-            <p className="text-sm text-slate-300 leading-relaxed">{report.preparationSuggestion}</p>
-          </div>
+          <Card glow>
+            <div className="flex items-center gap-2 mb-2">
+              <Sparkles className="w-4 h-4 text-accent-400" />
+              <h2 className="text-base font-semibold">Personalized Preparation</h2>
+            </div>
+            <p className="text-sm text-text-secondary leading-relaxed">{report.preparationSuggestion}</p>
+          </Card>
         )}
 
-        {/* Full transcript */}
-        <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-5">
-          <h2 className="text-base font-semibold mb-3">Full Transcript</h2>
-          <div className="flex flex-col gap-2 max-h-96 overflow-y-auto">
-            {transcript.map((entry, i) => (
-              <div key={i} className="text-sm">
-                <span className={`font-medium ${entry.role === 'assistant' ? 'text-sky-400' : 'text-emerald-400'}`}>
-                  {entry.role === 'assistant' ? 'Vera' : 'You'}:
-                </span>{' '}
-                <span className="text-slate-300">{entry.text}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Restart */}
-        <button
-          onClick={onRestart}
-          className="w-full rounded-xl bg-sky-500 hover:bg-sky-400 px-4 py-3 font-semibold text-white transition-colors"
-        >
-          Start New Interview
-        </button>
+        {/* Collapsible transcript */}
+        <Card>
+          <button
+            onClick={() => setShowTranscript((v) => !v)}
+            className="w-full flex items-center justify-between text-left"
+          >
+            <div className="flex items-center gap-2">
+              <FileText className="w-4 h-4 text-text-muted" />
+              <h2 className="text-base font-semibold">Full Transcript</h2>
+            </div>
+            {showTranscript ? (
+              <ChevronUp className="w-5 h-5 text-text-muted" />
+            ) : (
+              <ChevronDown className="w-5 h-5 text-text-muted" />
+            )}
+          </button>
+          {showTranscript && (
+            <div className="mt-4 flex flex-col gap-2 max-h-96 overflow-y-auto">
+              {transcript.map((entry, i) => (
+                <div key={i} className="text-sm leading-relaxed">
+                  <span className={`font-semibold ${entry.role === 'assistant' ? 'text-accent-300' : 'text-success-400'}`}>
+                    {entry.role === 'assistant' ? 'Vera' : 'You'}:
+                  </span>{' '}
+                  <span className="text-text-secondary">{entry.text}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
       </div>
     </div>
   );

@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Mic, Square, AlertCircle, Chrome, Zap, FileCheck2 } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+import {
+  Mic, MicOff, PhoneOff, Chrome, AlertCircle, FileCheck2,
+  ChevronLeft, ChevronRight, Radio, Clock,
+} from 'lucide-react';
 import {
   useVoiceInterview,
   type TranscriptEntry,
@@ -7,9 +11,15 @@ import {
 import { StateIndicator } from '@/components/StateIndicator';
 import { ResumeUpload } from '@/components/ResumeUpload';
 import { ReportView } from '@/components/ReportView';
+import { AnimatedBackground } from '@/components/AnimatedBackground';
+import { Button } from '@/components/ui/Button';
+import { Card } from '@/components/ui/Card';
+import { Chip } from '@/components/ui/Chip';
 import type { CandidateProfile, InterviewReport } from '@/types/interview';
 
 type Phase = 'setup' | 'interview' | 'report';
+
+const TRUST_ITEMS = ['Adaptive follow-ups', 'Live voice', 'Personalized report'];
 
 export function InterviewPanel() {
   const messagesRef = useRef<{ role: string; content: string }[]>([]);
@@ -24,8 +34,27 @@ export function InterviewPanel() {
   const [reportError, setReportError] = useState<string | null>(null);
   const [reportLoading, setReportLoading] = useState(false);
   const [finalTranscript, setFinalTranscript] = useState<TranscriptEntry[]>([]);
+  const [showTranscriptPanel, setShowTranscriptPanel] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
 
   const transcriptEndRef = useRef<HTMLDivElement>(null);
+  const startTimeRef = useRef<number>(0);
+
+  // Timer
+  useEffect(() => {
+    if (phase !== 'interview') return;
+    startTimeRef.current = Date.now();
+    const interval = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - startTimeRef.current) / 1000));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [phase]);
+
+  const formatTime = (s: number) => {
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return `${m.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
+  };
 
   const handleReportReady = useCallback((r: InterviewReport) => {
     setReport(r);
@@ -51,7 +80,9 @@ export function InterviewPanel() {
     transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [transcript]);
 
-  // Parse resume when a file is selected
+  // Get last few transcript entries for captions
+  const recentTranscript = transcript.slice(-4);
+
   const handleResumeSelected = useCallback(async (file: File | null) => {
     setResumeFile(file);
     setProfile(null);
@@ -64,7 +95,6 @@ export function InterviewPanel() {
 
     setParsing(true);
     try {
-      // Convert file to base64
       const arrayBuffer = await file.arrayBuffer();
       const fileBase64 = Buffer.from(arrayBuffer).toString('base64');
 
@@ -83,7 +113,6 @@ export function InterviewPanel() {
       const parsedProfile = data.profile as CandidateProfile;
       setProfile(parsedProfile);
 
-      // Build the adaptive system prompt using the profile
       const profileText = JSON.stringify(parsedProfile, null, 2);
       const adaptivePrompt =
         `You are Vera, a real-time voice AI interviewer. Here is the candidate's background:\n\n${profileText}\n\n` +
@@ -112,6 +141,7 @@ export function InterviewPanel() {
     setReport(null);
     setReportError(null);
     setReportLoading(false);
+    setElapsed(0);
     setPhase('interview');
     start();
   };
@@ -132,202 +162,390 @@ export function InterviewPanel() {
     setResumeFile(null);
     setSystemPrompt('');
     setParseError(null);
+    setElapsed(0);
   };
+
+  // --- Report loading skeleton ---
+  const ReportLoading = () => (
+    <div className="min-h-screen bg-background text-text-primary flex items-center justify-center">
+      <div className="max-w-2xl w-full px-6 flex flex-col gap-6">
+        <div className="flex flex-col items-center gap-4 py-8">
+          <div className="relative w-20 h-20">
+            <div className="absolute inset-0 rounded-full border-2 border-accent-500/20" />
+            <div className="absolute inset-0 rounded-full border-2 border-accent-400 border-t-transparent animate-spin" />
+            <div className="absolute inset-0 flex items-center justify-center">
+              <span className="text-sm font-bold text-accent-300">V</span>
+            </div>
+          </div>
+          <p className="text-sm text-text-secondary animate-pulse">Vera is reviewing your interview...</p>
+        </div>
+        {/* Skeleton cards */}
+        <div className="glass rounded-2xl p-5">
+          <div className="skeleton h-5 w-40 rounded mb-4" />
+          <div className="grid grid-cols-4 gap-4">
+            {[0, 1, 2, 3].map((i) => (
+              <div key={i} className="flex flex-col items-center gap-2">
+                <div className="skeleton w-20 h-20 rounded-full" />
+                <div className="skeleton h-3 w-16 rounded" />
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="grid grid-cols-3 gap-4">
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="glass rounded-2xl p-5">
+              <div className="skeleton h-4 w-24 rounded mb-3" />
+              <div className="skeleton h-3 w-full rounded mb-2" />
+              <div className="skeleton h-3 w-3/4 rounded mb-2" />
+              <div className="skeleton h-3 w-5/6 rounded" />
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 
   // --- Report phase ---
   if (phase === 'report') {
-    if (reportLoading && !report && !reportError) {
-      return (
-        <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center">
-          <div className="flex flex-col items-center gap-3">
-            <div className="w-8 h-8 border-2 border-sky-500 border-t-transparent rounded-full animate-spin" />
-            <p className="text-sm text-slate-400">Generating interview report…</p>
-          </div>
-        </div>
-      );
-    }
+    if (reportLoading && !report && !reportError) return <ReportLoading />;
 
     if (reportError && !report) {
       return (
-        <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center px-4">
-          <div className="max-w-md w-full rounded-xl border border-red-800/50 bg-red-950/40 p-6 flex flex-col gap-4">
-            <div className="flex items-start gap-3">
-              <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
-              <p className="text-sm text-red-200">{reportError}</p>
-            </div>
-            <button
-              onClick={handleRestart}
-              className="w-full rounded-xl bg-slate-700 hover:bg-slate-600 px-4 py-2.5 text-sm font-medium text-slate-200 transition-colors"
+        <div className="min-h-screen bg-background text-text-primary flex items-center justify-center px-4">
+          <AnimatePresence mode="wait">
+            <motion.div
+              key="report-error"
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.3 }}
+              className="max-w-md w-full"
             >
-              Back to Setup
-            </button>
-          </div>
+              <Card>
+                <div className="flex items-start gap-3 mb-4">
+                  <AlertCircle className="w-5 h-5 text-error-400 shrink-0 mt-0.5" />
+                  <p className="text-sm text-error-300">{reportError}</p>
+                </div>
+                <Button variant="secondary" size="md" className="w-full" onClick={handleRestart}>
+                  Back to Setup
+                </Button>
+              </Card>
+            </motion.div>
+          </AnimatePresence>
         </div>
       );
     }
 
     if (report) {
       return (
-        <ReportView
-          report={report}
-          profile={profile}
-          transcript={finalTranscript}
-          onRestart={handleRestart}
-        />
+        <>
+          <AnimatedBackground />
+          <AnimatePresence mode="wait">
+            <motion.div
+              key="report"
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.4 }}
+            >
+              <ReportView
+                report={report}
+                profile={profile}
+                transcript={finalTranscript}
+                onRestart={handleRestart}
+              />
+            </motion.div>
+          </AnimatePresence>
+        </>
       );
     }
   }
 
   // --- Setup + Interview phases ---
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
-      {/* Header */}
-      <header className="border-b border-slate-800/60 px-6 py-4 flex items-center justify-between">
+    <div className="min-h-screen bg-background text-text-primary flex flex-col relative">
+      <AnimatedBackground />
+
+      {/* Top bar */}
+      <header className="relative z-10 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-sky-500 to-emerald-500 flex items-center justify-center">
-            <Mic className="w-5 h-5 text-white" />
+          <div className="w-9 h-9 rounded-xl glass-strong flex items-center justify-center">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+              <path d="M4 6L12 18L20 6" stroke="#22d3ee" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
           </div>
           <div>
-            <h1 className="text-lg font-semibold tracking-tight">Vera</h1>
-            <p className="text-xs text-slate-500">Real-time voice AI interviewer</p>
+            <h1 className="text-base font-bold tracking-tight">Vera</h1>
+            <p className="text-[10px] text-text-muted uppercase tracking-wider">AI Interviewer</p>
           </div>
         </div>
-        <div className="flex items-center gap-2 text-xs text-slate-500">
-          <Chrome className="w-4 h-4" />
-          <span>Best in Chrome</span>
+
+        <div className="flex items-center gap-3">
+          {phase === 'interview' && (
+            <>
+              <div className="flex items-center gap-1.5 text-xs text-text-secondary">
+                <Radio className="w-3.5 h-3.5 text-error-400 animate-pulse" />
+                <span>Live</span>
+              </div>
+              <div className="flex items-center gap-1.5 text-xs text-text-secondary font-mono">
+                <Clock className="w-3.5 h-3.5" />
+                <span>{formatTime(elapsed)}</span>
+              </div>
+            </>
+          )}
+          {phase === 'setup' && (
+            <div className="flex items-center gap-1.5 text-xs text-text-muted">
+              <Chrome className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Best in Chrome</span>
+            </div>
+          )}
         </div>
       </header>
 
       {/* Main content */}
-      <div className="flex-1 flex items-center justify-center px-4 py-6">
-        <div className="w-full max-w-2xl flex flex-col gap-6">
-          {/* Not supported warning */}
-          {!isSupported && (
-            <div className="rounded-xl border border-amber-700/50 bg-amber-950/40 px-4 py-3 flex items-start gap-3">
-              <AlertCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
-              <p className="text-sm text-amber-200">
-                Your browser doesn't support the Web Speech API. Please open this app in
-                <strong> Google Chrome</strong> on desktop to use the voice interview.
-              </p>
-            </div>
-          )}
-
-          {/* Error */}
-          {error && (
-            <div className="rounded-xl border border-red-800/50 bg-red-950/40 px-4 py-3 flex items-start gap-3">
-              <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
-              <p className="text-sm text-red-200">{error}</p>
-            </div>
-          )}
-
-          {/* Setup panel (pre-interview) */}
+      <div className="flex-1 flex items-center justify-center px-4 py-6 relative z-10">
+        <AnimatePresence mode="wait">
+          {/* --- SETUP PHASE --- */}
           {phase === 'setup' && (
-            <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-6 flex flex-col gap-5">
-              <div className="flex items-center gap-2 text-sm text-slate-400">
-                <Zap className="w-4 h-4 text-sky-400" />
-                <span>Setup</span>
+            <motion.div
+              key="setup"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              transition={{ duration: 0.4 }}
+              className="w-full max-w-xl flex flex-col gap-6"
+            >
+              {/* Hero */}
+              <div className="text-center flex flex-col gap-3 pt-4">
+                <h2 className="text-4xl sm:text-5xl font-bold tracking-tight">
+                  An interviewer that
+                  <br />
+                  <span className="text-gradient">adapts to you</span>
+                </h2>
+                <p className="text-base text-text-secondary max-w-md mx-auto">
+                  Upload your resume and have a live voice conversation with Vera — an AI interviewer that asks real follow-up questions.
+                </p>
               </div>
-              <ResumeUpload
-                onFileSelected={handleResumeSelected}
-                parsing={parsing}
-                parseError={parseError}
-              />
 
-              {/* Profile preview */}
-              {profile && !parsing && (
-                <div className="rounded-xl border border-emerald-800/40 bg-emerald-950/20 p-4 flex flex-col gap-2">
-                  <div className="flex items-center gap-2 text-sm text-emerald-400">
-                    <FileCheck2 className="w-4 h-4" />
-                    <span>Resume parsed successfully</span>
-                  </div>
-                  <div className="text-xs text-slate-400 flex flex-col gap-1.5">
-                    {profile.name && (
-                      <p><span className="text-slate-500">Name:</span> {profile.name}</p>
-                    )}
-                    {profile.skills && profile.skills.length > 0 && (
-                      <p><span className="text-slate-500">Skills:</span> {profile.skills.join(', ')}</p>
-                    )}
-                    {profile.keyTechnologies && profile.keyTechnologies.length > 0 && (
-                      <p><span className="text-slate-500">Tech:</span> {profile.keyTechnologies.join(', ')}</p>
-                    )}
-                    {profile.projects && profile.projects.length > 0 && (
-                      <p><span className="text-slate-500">Projects:</span> {profile.projects.map((p) => p.name).join(', ')}</p>
-                    )}
-                  </div>
+              {/* Trust row */}
+              <div className="flex items-center justify-center gap-3 flex-wrap">
+                {TRUST_ITEMS.map((item) => (
+                  <span key={item} className="text-xs text-text-muted flex items-center gap-1.5">
+                    <span className="w-1 h-1 rounded-full bg-accent-400" />
+                    {item}
+                  </span>
+                ))}
+              </div>
+
+              {/* Warnings */}
+              {!isSupported && (
+                <div className="glass rounded-xl border-warning-500/30 px-4 py-3 flex items-start gap-3">
+                  <AlertCircle className="w-5 h-5 text-warning-400 shrink-0 mt-0.5" />
+                  <p className="text-sm text-warning-200">
+                    Your browser doesn't support the Web Speech API. Please use Google Chrome on desktop.
+                  </p>
                 </div>
               )}
 
-              <p className="text-xs text-slate-500">
-                {resumeFile
-                  ? profile
-                    ? 'Vera will tailor the interview to your resume.'
-                    : parsing
-                      ? 'Analyzing your resume…'
-                      : 'Resume uploaded but not yet parsed.'
-                  : 'Resume upload is optional — Vera will conduct a general interview without one.'}
-              </p>
-              <button
-                onClick={handleStart}
-                disabled={!isSupported || parsing}
-                className="w-full flex items-center justify-center gap-2 rounded-xl bg-sky-500 hover:bg-sky-400 disabled:bg-slate-700 disabled:text-slate-500 px-4 py-3 font-semibold text-white transition-colors"
-              >
-                <Mic className="w-5 h-5" />
-                Start Interview
-              </button>
-            </div>
-          )}
+              {error && (
+                <div className="glass rounded-xl border-error-500/30 px-4 py-3 flex items-start gap-3">
+                  <AlertCircle className="w-5 h-5 text-error-400 shrink-0 mt-0.5" />
+                  <p className="text-sm text-error-300">{error}</p>
+                </div>
+              )}
 
-          {/* State indicator (during interview) */}
-          {phase === 'interview' && (
-            <div className="rounded-2xl border border-slate-800 bg-slate-900/50">
-              <StateIndicator state={state} />
-            </div>
-          )}
+              {/* Upload card */}
+              <Card className="flex flex-col gap-5">
+                <ResumeUpload
+                  onFileSelected={handleResumeSelected}
+                  parsing={parsing}
+                  parseError={parseError}
+                />
 
-          {/* Transcript */}
-          {phase === 'interview' && transcript.length > 0 && (
-            <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-4 flex flex-col gap-3 max-h-80 overflow-y-auto">
-              {transcript.map((entry: TranscriptEntry) => (
-                <div
-                  key={entry.id}
-                  className={`flex ${entry.role === 'assistant' ? 'justify-start' : 'justify-end'}`}
-                >
-                  <div
-                    className={`max-w-[80%] rounded-xl px-3.5 py-2.5 text-sm leading-relaxed ${
-                      entry.role === 'assistant'
-                        ? 'bg-slate-800 text-slate-200'
-                        : 'bg-sky-600/20 text-sky-100 border border-sky-700/30'
-                    }`}
+                {/* Profile preview */}
+                {profile && !parsing && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    transition={{ duration: 0.3 }}
+                    className="overflow-hidden"
                   >
-                    <span className="text-xs font-medium block mb-0.5 opacity-60">
-                      {entry.role === 'assistant' ? 'Vera' : 'You'}
-                    </span>
-                    {entry.text}
+                    <div className="glass-strong rounded-xl border-success-500/20 p-4 flex flex-col gap-3">
+                      <div className="flex items-center gap-2 text-sm text-success-400">
+                        <FileCheck2 className="w-4 h-4" />
+                        <span>Resume parsed successfully</span>
+                      </div>
+                      <div className="flex flex-col gap-3">
+                        {profile.name && (
+                          <p className="text-sm font-semibold text-text-primary">{profile.name}</p>
+                        )}
+                        {profile.skills && profile.skills.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5">
+                            {profile.skills.slice(0, 8).map((skill, i) => (
+                              <Chip key={i} color="accent">{skill}</Chip>
+                            ))}
+                          </div>
+                        )}
+                        {profile.projects && profile.projects.length > 0 && (
+                          <div className="flex flex-col gap-1">
+                            <span className="text-xs text-text-muted uppercase tracking-wide">Projects</span>
+                            {profile.projects.slice(0, 3).map((p, i) => (
+                              <p key={i} className="text-xs text-text-secondary">
+                                <span className="text-text-primary font-medium">{p.name}</span>
+                                {p.description && <span className="text-text-muted"> — {p.description}</span>}
+                              </p>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+
+                <p className="text-xs text-text-muted text-center">
+                  {resumeFile
+                    ? profile
+                      ? 'Vera will tailor the interview to your resume.'
+                      : parsing
+                        ? 'Analyzing your resume...'
+                        : 'Resume uploaded but not yet parsed.'
+                    : 'Resume upload is optional — Vera will conduct a general interview without one.'}
+                </p>
+
+                {/* Start button with tooltip */}
+                <div className="relative">
+                  <Button
+                    variant="primary"
+                    size="lg"
+                    className="w-full"
+                    onClick={handleStart}
+                    disabled={!isSupported || parsing}
+                    title={!profile && !parsing ? 'Upload a resume for a personalized interview, or start without one' : undefined}
+                  >
+                    <Mic className="w-5 h-5" />
+                    {profile ? 'Start Interview' : 'Start Interview'}
+                  </Button>
+                </div>
+              </Card>
+            </motion.div>
+          )}
+
+          {/* --- INTERVIEW PHASE --- */}
+          {phase === 'interview' && (
+            <motion.div
+              key="interview"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.4 }}
+              className="w-full h-full flex flex-col"
+            >
+              {/* Full-viewport interview layout */}
+              <div className="flex-1 flex flex-col items-center justify-center gap-4 relative">
+
+                {/* Avatar + state indicator */}
+                <StateIndicator state={state} />
+
+                {/* Live captions strip */}
+                <div className="w-full max-w-2xl mt-4">
+                  <div className="glass rounded-2xl px-5 py-3 min-h-[60px] flex flex-col gap-1.5 justify-center">
+                    {recentTranscript.length > 0 ? (
+                      recentTranscript.map((entry, i) => {
+                        const isLatest = i === recentTranscript.length - 1;
+                        return (
+                          <div
+                            key={entry.id}
+                            className="text-sm leading-relaxed transition-all"
+                            style={{
+                              opacity: isLatest ? 1 : 0.4 - (recentTranscript.length - 1 - i) * 0.1,
+                            }}
+                          >
+                            <span className={`text-xs font-medium ${entry.role === 'assistant' ? 'text-accent-300' : 'text-success-400'}`}>
+                              {entry.role === 'assistant' ? 'Vera' : 'You'}
+                            </span>
+                            <span className="text-text-secondary"> {entry.text}</span>
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <p className="text-sm text-text-muted text-center">Waiting for conversation to start...</p>
+                    )}
                   </div>
                 </div>
-              ))}
-              <div ref={transcriptEndRef} />
-            </div>
-          )}
 
-          {/* Stop button */}
-          {phase === 'interview' && (
-            <button
-              onClick={handleStop}
-              className="w-full flex items-center justify-center gap-2 rounded-xl border border-red-800/50 bg-red-950/30 hover:bg-red-900/40 text-red-300 px-4 py-3 font-medium transition-colors"
-            >
-              <Square className="w-4 h-4" />
-              End Interview
-            </button>
-          )}
+                {/* Floating control bar */}
+                <div className="mt-6 flex items-center gap-2">
+                  {/* Toggle transcript */}
+                  <button
+                    onClick={() => setShowTranscriptPanel((v) => !v)}
+                    aria-label="Toggle transcript panel"
+                    className="glass-strong w-11 h-11 rounded-xl flex items-center justify-center text-text-secondary hover:text-text-primary hover:bg-surface-hover transition-all active:scale-95"
+                  >
+                    {showTranscriptPanel ? <ChevronRight className="w-5 h-5" /> : <ChevronLeft className="w-5 h-5" />}
+                  </button>
 
-          {/* Interruption hint */}
-          {phase === 'interview' && state === 'speaking' && (
-            <p className="text-center text-xs text-slate-500">
-              Speak at any time to interrupt Vera
-            </p>
+                  {/* End call */}
+                  <button
+                    onClick={handleStop}
+                    aria-label="End interview"
+                    className="bg-error-500/15 border border-error-500/30 text-error-400 hover:bg-error-500/25 active:scale-95 rounded-xl w-14 h-14 flex items-center justify-center transition-all"
+                  >
+                    <PhoneOff className="w-5 h-5" />
+                  </button>
+                </div>
+
+                {/* Interruption hint */}
+                {state === 'speaking' && (
+                  <p className="text-xs text-text-muted mt-2">Speak at any time to interrupt</p>
+                )}
+              </div>
+
+              {/* Collapsible transcript side panel */}
+              <AnimatePresence>
+                {showTranscriptPanel && (
+                  <motion.div
+                    initial={{ x: 320, opacity: 0 }}
+                    animate={{ x: 0, opacity: 1 }}
+                    exit={{ x: 320, opacity: 0 }}
+                    transition={{ duration: 0.3, ease: 'easeOut' }}
+                    className="fixed right-0 top-0 bottom-0 w-80 glass-strong border-l border-border z-20 flex flex-col"
+                  >
+                    <div className="px-4 py-4 border-b border-border flex items-center justify-between">
+                      <span className="text-sm font-semibold">Transcript</span>
+                      <button
+                        onClick={() => setShowTranscriptPanel(false)}
+                        aria-label="Close transcript panel"
+                        className="text-text-muted hover:text-text-primary transition-colors"
+                      >
+                        <ChevronRight className="w-5 h-5" />
+                      </button>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
+                      {transcript.map((entry: TranscriptEntry) => (
+                        <div
+                          key={entry.id}
+                          className={`flex ${entry.role === 'assistant' ? 'justify-start' : 'justify-end'}`}
+                        >
+                          <div
+                            className={`max-w-[85%] rounded-xl px-3 py-2 text-xs leading-relaxed ${
+                              entry.role === 'assistant'
+                                ? 'glass text-text-secondary'
+                                : 'bg-accent-500/15 text-accent-100 border border-accent-500/20'
+                            }`}
+                          >
+                            <span className="text-[10px] font-medium block mb-0.5 opacity-60">
+                              {entry.role === 'assistant' ? 'Vera' : 'You'}
+                            </span>
+                            {entry.text}
+                          </div>
+                        </div>
+                      ))}
+                      <div ref={transcriptEndRef} />
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </motion.div>
           )}
-        </div>
+        </AnimatePresence>
       </div>
     </div>
   );
