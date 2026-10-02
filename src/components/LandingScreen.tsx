@@ -9,6 +9,7 @@ import { useState } from 'react';
 
 type MicCheckState = 'idle' | 'checking' | 'ready' | 'failed';
 interface LandingScreenProps {
+  serverWarming: boolean;
   profile: CandidateProfile | null;
   parsing: boolean;
   parseError: string | null;
@@ -34,7 +35,7 @@ interface LandingScreenProps {
 }
 
 export function LandingScreen({
-  profile, parsing, parseError, pasteText, micStatus, micLevel, isSupported, selectedVoiceName,
+  serverWarming, profile, parsing, parseError, pasteText, micStatus, micLevel, isSupported, selectedVoiceName,
   voiceOptions, actualVoice, voiceLoading, voiceProgress, browserFallback, noFemaleVoice,
   canStart, startReason, onFileSelected, onPasteChange, onPasteContinue, onVoiceChange, onMicCheck, onStart,
 }: LandingScreenProps) {
@@ -107,6 +108,7 @@ export function LandingScreen({
                   <div><p className="font-micro text-text-muted">Step 1 · Resume</p><h3 className="mt-1 text-lg font-medium text-text-primary">Give Vera some context</h3></div>
                   {profile && <Tag tone="emerald" dot>Ready</Tag>}
                 </div>
+                {serverWarming && <p role="status" className="mb-3 text-xs text-text-muted">Warming up Vera’s server, this can take up to a minute.</p>}
                 <ResumeUpload onFileSelected={onFileSelected} parsing={parsing} parseError={parseError} isParsed={Boolean(profile)} disabled={!isSupported}/>
                 <details className="group mt-4 rounded-2xl border border-white/[.08] bg-white/[.02] open:bg-white/[.035]">
                   <summary className="flex min-h-12 cursor-pointer list-none items-center justify-between px-4 text-sm text-text-secondary"><span className="flex items-center gap-2"><FileCheck2 className="h-4 w-4 text-lime-200"/>Paste resume text instead</span><span aria-hidden="true" className="text-lg text-text-muted group-open:rotate-45 transition-transform">+</span></summary>

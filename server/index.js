@@ -21,15 +21,41 @@ try {
 }
 
 const app = express();
-const PORT = process.env.VERA_BACKEND_PORT || process.env.PORT || 3001;
+const PORT = Number(process.env.PORT || process.env.VERA_BACKEND_PORT || 3001);
+const frontendOrigins = (process.env.FRONTEND_ORIGIN || '').split(',').map((origin) => origin.trim()).filter(Boolean);
+const corsOptions = {
+  origin(origin, callback) {
+    const allowed = !origin || frontendOrigins.includes(origin) || (process.env.NODE_ENV !== 'production' && frontendOrigins.length === 0);
+    callback(null, allowed);
+  },
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Accept', 'Authorization'],
+  maxAge: 86400,
+};
 
-app.use(cors());
+app.use(cors(corsOptions));
+app.options('/api/*', cors(corsOptions));
 app.use(express.json({ limit: '10mb' }));
 
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 console.info('[Vera config] GROQ_API_KEY loaded:', Boolean(GROQ_API_KEY));
+console.info('[Vera config] FRONTEND_ORIGIN loaded:', frontendOrigins.length > 0);
+
+function deploymentError(code, error, detail) {
+  return process.env.NODE_ENV === 'production' ? { error, code } : { error, detail, code };
+}
+
+function profileFailureCode(error) {
+  if (!GROQ_API_KEY) return 'NO_KEY';
+  if (error.status === 429) return 'UPSTREAM_429';
+  if (error.status === 504 || /timeout/i.test(error.message || '')) return 'TIMEOUT';
+  if (error.status >= 500) return 'UPSTREAM_5XX';
+  if (error.status === 401) return 'UPSTREAM_401';
+  return 'PROFILE_FAILED';
+}
 
 const GROQ_CHAT_MODEL = 'openai/gpt-oss-20b';
+const GROQ_CHAT_FALLBACK_MODEL = 'allam-2-7b';
 const GROQ_PROFILE_MODEL = 'openai/gpt-oss-20b';
 const GROQ_REPORT_MODEL = 'openai/gpt-oss-20b';
 const GROQ_REPORT_FALLBACK_MODEL = 'allam-2-7b';
@@ -135,13 +161,15 @@ function retryDelayMs(retryAfter) {
 }
 
 async function* groqChatTokens(messages, options = {}) {
+  const model = options.model || GROQ_CHAT_MODEL;
+  const supportsReasoningControls = model.startsWith('openai/gpt-oss-');
   const response = await fetch(GROQ_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${GROQ_API_KEY}` },
     signal: options.signal,
     body: JSON.stringify({
-      model: options.model || GROQ_CHAT_MODEL, messages, stream: true, temperature: 0.25,
-      max_completion_tokens: 160, reasoning_effort: 'low', reasoning_format: 'hidden',
+      model, messages, stream: true, temperature: 0.25, max_completion_tokens: 160,
+      ...(supportsReasoningControls ? { reasoning_effort: 'low', reasoning_format: 'hidden' } : {}),
     }),
   });
   if (!response.ok) {
@@ -180,7 +208,12 @@ app.post('/api/chat', async (req, res) => {
   const sessionKey = sessionId === undefined || sessionId === null ? '' : String(sessionId);
   console.info('[Vera chat] incoming body shape', { messageCount: Array.isArray(messages) ? messages.length : null, messages: shape, profilePresent: Boolean(body.profile || profileSummary || (sessionKey && profilesBySession.has(sessionKey))), sessionIdPresent: Boolean(sessionKey), turnIdPresent: turnId !== undefined && turnId !== null });
   const badRequest = (error, detail) => res.status(400).json({ error, detail });
-  if (!GROQ_API_KEY) return res.status(503).json({ error: 'Vera is unavailable because the server AI key is not configured.', detail: 'GROQ_API_KEY is not configured on the server.' });
+  if (!GROQ_API_KEY) {
+    const approximateTokens = Array.isArray(messages) ? Math.ceil(messages.reduce((sum, message) => sum + (typeof message?.content === 'string' ? message.content.length : 0), 0) / 4) : 0;
+    console.error('[Vera chat] Groq request skipped: GROQ_API_KEY is missing');
+    console.info('[Vera chat] turn summary', { turnNumber: turnId ?? null, approximateTokens, model: GROQ_CHAT_MODEL, upstreamStatus: 503, retries: 0, elapsedMs: 0 });
+    return res.status(503).json({ error: 'Vera is unavailable because the server AI key is not configured.', detail: 'GROQ_API_KEY is not configured on the server.' });
+  }
   if (!Array.isArray(messages)) return badRequest('Invalid chat request.', 'messages must be an array.');
   if (!messages.length) return badRequest('Invalid chat request.', 'messages must contain at least one candidate message.');
   const validated = [];
@@ -213,15 +246,22 @@ app.post('/api/chat', async (req, res) => {
   const sessionController = new AbortController();
   const sessionTimer = setTimeout(() => sessionController.abort(), 20_000);
   res.on('close', () => { if (!res.writableEnded) sessionController.abort(); });
-  let allText = ''; let pendingSentence = ''; let firstTokenAt = null; let retryCount = 0; let sentAny = false; let questionSent = false; let firstSentenceLogged = false; const requestStartedAt = Date.now();
+  let allText = ''; let pendingSentence = ''; let firstTokenAt = null; let retryCount = 0; let sentAny = false; let questionSent = false; let firstSentenceLogged = false; let upstreamStatus = null; let modelUsed = GROQ_CHAT_MODEL; const requestStartedAt = Date.now();
+  const approximateTokens = Math.ceil(groqMessages.reduce((sum, message) => sum + message.content.length, 0) / 4);
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8'); res.setHeader('Cache-Control', 'no-cache, no-transform'); res.setHeader('Connection', 'keep-alive'); res.flushHeaders?.();
   console.info('[Vera chat] trimmed request sent', { model: GROQ_CHAT_MODEL, messages: turns.length, sessionIdPresent: Boolean(sessionKey), turnId, at: requestStartedAt });
   try {
     let attempts = 0;
     while (attempts < 2) {
       attempts += 1;
+      modelUsed = attempts === 1 ? GROQ_CHAT_MODEL : GROQ_CHAT_FALLBACK_MODEL;
       try {
-        for await (const token of groqChatTokens(groqMessages, { signal: sessionController.signal })) {
+        console.info('[Vera chat] turn attempt', { turnNumber: turnId ?? turns.filter((message) => message.role === 'user').length, approximateTokens, model: modelUsed, attempt: attempts });
+        const attemptMessages = attempts === 1 ? groqMessages : [
+          { role: 'system', content: groqMessages[0].content.slice(0, 2000) },
+          ...turns.slice(-6).map((message) => ({ ...message, content: message.content.slice(-600) })),
+        ];
+        for await (const token of groqChatTokens(attemptMessages, { signal: sessionController.signal, model: modelUsed })) {
           if (firstTokenAt === null) { firstTokenAt = Date.now(); console.info('[Vera timing] first Groq token', { msFromRequest: firstTokenAt - requestStartedAt }); }
           if (questionSent) continue;
           allText += token; pendingSentence += token;
@@ -248,9 +288,11 @@ app.post('/api/chat', async (req, res) => {
         }
         if (!allText.trim()) throw new Error('Groq returned an empty completion');
         if (chatReplyViolations(allText).length) throw Object.assign(new Error('interviewer reply guard rejected completion'), { status: 422 });
+        upstreamStatus = 200;
         sendSse(res, 'done', { reply: allText.trim(), retryCount });
         return res.end();
       } catch (error) {
+        upstreamStatus = error.status || upstreamStatus;
         const retryable = [429, 500, 502, 503, 504].includes(error.status) || (!error.status && !sessionController.signal.aborted);
         const canRetry = attempts === 1 && retryable && !sentAny && !sessionController.signal.aborted;
         console.warn('[Vera chat] stream attempt failed', { attempt: attempts, reason: error.status || error.message, detail: error.details || error.message, retry: canRetry });
@@ -258,6 +300,7 @@ app.post('/api/chat', async (req, res) => {
           allText = ''; pendingSentence = ''; questionSent = false;
           retryCount += 1;
           const delay = retryDelayMs(error.retryAfter);
+          console.info('[Vera chat] retrying with smaller model after upstream response', { status: error.status || null, retryAfterMs: delay, nextModel: GROQ_CHAT_FALLBACK_MODEL });
           if (Date.now() + delay + 500 < requestStartedAt + 12_000) await new Promise((resolve) => setTimeout(resolve, delay));
           else throw error;
           continue;
@@ -272,9 +315,12 @@ app.post('/api/chat', async (req, res) => {
       : status === 401 ? 'Vera could not connect to the interview service. Please try again later.'
         : status === 429 ? 'Vera is busy for a moment. Please try again shortly.'
           : status >= 500 ? 'Vera’s interview service is temporarily unavailable.' : 'Vera lost the connection for a moment.';
-    sendSse(res, 'fallback', { reply: 'Sorry, I lost that for a second. Could you say it again?', status, friendlyMessage });
+    sendSse(res, 'fallback', { reply: 'Sorry, give me a second. Could you repeat that?', status, friendlyMessage });
     res.end();
-  } finally { clearTimeout(sessionTimer); chatTurnsInFlight.delete(requestKey); }
+  } finally {
+    console.info('[Vera chat] turn summary', { turnNumber: turnId ?? turns.filter((message) => message.role === 'user').length, approximateTokens, model: modelUsed, upstreamStatus, retries: retryCount, elapsedMs: Date.now() - requestStartedAt });
+    clearTimeout(sessionTimer); chatTurnsInFlight.delete(requestKey);
+  }
 });
 
 // A tiny profile-ready request warms the Groq connection and chat model before Begin.
@@ -350,9 +396,11 @@ app.post('/api/parse-resume', uploadResumeFile, async (req, res) => {
     return res.json({ text });
   } catch (err) {
     console.error(`[Vera upload ${requestId}] Resume parse error:`, err?.stack || err);
-    return res.status(500).json({
-      error: 'Server failed to parse PDF document. Please verify the file is intact and try again.',
-    });
+    return res.status(500).json(deploymentError(
+      'PDF_PARSE_FAILED',
+      'Server failed to parse PDF document. Please verify the file is intact and try again.',
+      err?.message || String(err),
+    ));
   } finally {
     if (parser) {
       try {
@@ -484,7 +532,8 @@ app.post('/api/build-profile', async (req, res) => {
             profile,
             basicProfile: true,
             warning: 'Using a basic profile for now.',
-            error: message,
+            error: !GROQ_API_KEY ? 'The AI profile service is not configured on this server. Using a basic profile for now.' : message,
+            code: profileFailureCode(error),
             ...((process.env.NODE_ENV !== 'production') ? { detail: error.details || error.message, upstreamStatus: error.status || null } : {}),
             extractedText: cleanText.slice(0, 500),
           },
@@ -624,19 +673,33 @@ function buildBasicLocalReport(candidateTurns, questionAnswerTurnNumbers, shortS
   const terms = ['JavaScript', 'TypeScript', 'Python', 'Java', 'React', 'Node.js', 'AWS', 'SQL', 'PostgreSQL', 'MongoDB', 'Docker', 'Kubernetes', 'leadership', 'testing', 'performance'];
   const topics = terms.filter((term) => candidateTurns.some((turn) => turn.text.toLowerCase().includes(term.toLowerCase()))).slice(0, 8);
   const topicText = topics.length ? topics.join(', ') : 'no repeated technical topics identified';
-  const empty = () => ({ score: null, evidence: [], supportingAnswerTurns: [], note: 'Not enough evidence yet. Detailed analysis was unavailable; retry for category scores.' });
+  const average = candidateTurns.length ? total / candidateTurns.length : 0;
+  const shortRatio = candidateTurns.length ? lengths.filter((length) => length < 15).length / candidateTurns.length : 1;
+  const ideaCount = candidateTurns.filter((turn) => /because|trade.?off|approach|step|edge case|result|measur|improv|built|designed/i.test(turn.text)).length;
+  const projectCount = candidateTurns.filter((turn) => /project|built|develop|implemented|users|customer|percent|\d+%/i.test(turn.text)).length;
+  const clamp = (score) => Math.max(40, Math.min(75, Math.round(score)));
+  const scores = {
+    communication: clamp(45 + Math.min(average, 80) * 0.25 - fillers.length * 1.5 - shortRatio * 8),
+    technicalKnowledge: clamp(44 + topics.length * 3 + Math.min(candidateTurns.length, 5)),
+    problemSolving: clamp(44 + ideaCount * 4 + Math.min(candidateTurns.length, 5)),
+    projectUnderstanding: clamp(44 + projectCount * 4 + Math.min(topics.length, 4)),
+    confidence: clamp(58 - fillers.length * 1.5 - shortRatio * 10),
+    resumeKnowledge: clamp(42 + topics.length * 2 + projectCount * 3),
+  };
+  const metricEvidence = candidateTurns[0] ? [{ turn: candidateTurns[0].turn, quote: candidateTurns[0].text.slice(0, 120), why: `Basic estimate uses transcript counts: ${candidateTurns.length} answers, ${Math.round(average)} words per answer, ${fillers.length} fillers, and ${topics.length} topic matches. This is not a semantic evaluation.` }] : [];
+  const category = (score) => ({ score, evidence: metricEvidence, supportingAnswerTurns: candidateTurns.map((turn) => turn.turn), note: 'Basic transcript-statistic estimate. Retry for detailed evidence-based analysis.' });
   const item = (title, detail, evidence = '', turn = null) => ({ title, detail, evidence, turn });
   const first = candidateTurns[0]; const reviews = candidateTurns.filter((turn) => questionAnswerTurnNumbers.has(turn.turn));
   return {
-    basicReport: true, analysisNote: 'Detailed analysis unavailable',
-    categories: { communication: empty(), technicalKnowledge: empty(), problemSolving: empty(), projectUnderstanding: empty(), confidence: empty(), resumeKnowledge: empty() },
-    overall: { score: null, scoredCategories: 0, candidateAnswerCount: candidateTurns.length, hiringReadiness: 'Needs practice' },
-    summary: `${candidateTurns.length} candidate answers were recorded, averaging ${candidateTurns.length ? Math.round(total / candidateTurns.length) : 0} words, with ${fillers.length} filler words. Topics: ${topicText}. Detailed analysis unavailable; retry when the report service is ready.`, shortSession,
+    basicReport: true, analysisNote: 'Detailed analysis unavailable. Retry for a detailed report. Basic scores use transcript statistics.',
+    categories: { communication: category(scores.communication), technicalKnowledge: category(scores.technicalKnowledge), problemSolving: category(scores.problemSolving), projectUnderstanding: category(scores.projectUnderstanding), confidence: category(scores.confidence), resumeKnowledge: category(scores.resumeKnowledge) },
+    overall: { score: Math.round(Object.values(scores).reduce((sum, score) => sum + score, 0) / 6), scoredCategories: 6, candidateAnswerCount: candidateTurns.length, hiringReadiness: 'Needs practice' },
+    summary: `${candidateTurns.length} candidate answers were recorded, averaging ${candidateTurns.length ? Math.round(total / candidateTurns.length) : 0} words, with ${fillers.length} filler words. Topics: ${topicText}. Detailed analysis unavailable. Retry for evidence-based feedback; these scores are basic transcript-statistic estimates.`, shortSession,
     swot: {
       strengths: [item('Answers recorded', `You completed ${candidateTurns.length} candidate answers.`, first ? `${lengths[0]} words in the first answer` : 'No answer text was captured', first?.turn ?? null), item('Topics captured', `The transcript includes ${topicText}.`), item('Practice completed', 'You have a real interview transcript to review.')],
-      weaknesses: [item('Scoring unavailable', 'A detailed scoring pass did not complete.'), item('Answer depth unmeasured', 'The local summary counts words but does not judge answer quality.'), item('Evidence review unavailable', 'Retry for transcript-linked feedback.')],
+      weaknesses: [item('Detailed scoring unavailable', 'The scores are basic transcript-statistic estimates.'), item('Answer depth unmeasured', 'The local summary counts words but does not judge answer quality.'), item('Evidence review unavailable', 'Retry for transcript-linked feedback.')],
       opportunities: [item('Retry the detailed report', 'Reconnect to get evidence-based feedback.'), item('Practice mentioned topics', `Review ${topicText}.`), item('Structure answers', 'Use a situation, action, and result structure next time.')],
-      threats: [item('No scored evidence yet', 'Recruiters may probe areas this summary could not assess.'), item('Gaps were not evaluated', 'This report cannot identify role-specific gaps.'), item('Feedback is incomplete', 'Retry to replace this basic summary with detailed analysis.')],
+      threats: [item('Provisional estimates', 'Recruiters may probe areas this summary could not assess.'), item('Gaps were not evaluated', 'This report cannot identify role-specific gaps.'), item('Feedback is incomplete', 'Retry to replace this basic summary with detailed analysis.')],
     },
     answerReviews: reviews.map((turn) => ({ turn: turn.turn, question: turn.question || 'Interview question', candidateAnswer: turn.text, strongerAnswerShouldInclude: 'Detailed analysis unavailable.', modelAnswer: 'Detailed analysis unavailable.' })),
     interviewBehavior: { fillerWordCount: fillers.length, averageAnswerLengthWords: candidateTurns.length ? Math.round(total / candidateTurns.length) : 0, tooShortTurns: candidateTurns.filter((turn, index) => lengths[index] < 15).map((turn) => turn.turn), ramblingTurns: candidateTurns.filter((turn, index) => lengths[index] > 150).map((turn) => turn.turn), interruptionHandling: 'Not evaluated in the local summary.', followUpHandling: 'Not evaluated in the local summary.' },
@@ -705,9 +768,20 @@ app.post('/api/report', async (req, res) => {
       retries += 1; raw = await invoke(model, 2200, error.message);
       report = validateInterviewReport(JSON.parse(raw), candidateIds, pairedIds);
     }
+    const statisticFallback = buildBasicLocalReport(candidates, pairedIds, shortSession);
+    let usedStatisticScore = false;
+    for (const key of ['communication', 'technicalKnowledge', 'problemSolving', 'projectUnderstanding', 'confidence', 'resumeKnowledge']) {
+      if (report.categories[key].score === null) {
+        report.categories[key] = statisticFallback.categories[key]; usedStatisticScore = true;
+      }
+    }
     const scores = Object.values(report.categories).map((category) => category.score).filter((score) => score !== null);
-    report.overall.score = scores.length ? Math.round(scores.reduce((sum, score) => sum + score, 0) / scores.length) : null;
-    report.overall.scoredCategories = scores.length; report.overall.candidateAnswerCount = candidates.length;
+    report.overall.score = scores.length ? Math.round(scores.reduce((sum, score) => sum + score, 0) / scores.length) : statisticFallback.overall.score;
+    report.overall.scoredCategories = scores.length || 6; report.overall.candidateAnswerCount = candidates.length;
+    if (usedStatisticScore) {
+      report.basicReport = true;
+      report.analysisNote = 'Detailed analysis unavailable for some categories. Retry for a detailed report. Basic scores use transcript statistics.';
+    }
     report.overall.hiringReadiness = report.overall.score === null || scores.length < 3 || report.overall.score < 60 ? 'Needs practice' : report.overall.score >= 80 && scores.length >= 4 ? 'Ready' : 'Almost there';
     report.shortSession = shortSession;
     const lengths = candidates.map((turn) => turn.text.trim().split(/\s+/).filter(Boolean).length); const totalWords = lengths.reduce((sum, length) => sum + length, 0);
@@ -731,6 +805,10 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`[Vera] Backend running on http://localhost:${PORT}`);
-});
+if (!process.env.VERCEL) {
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`[Vera] Backend listening on 0.0.0.0:${PORT}`);
+  });
+}
+
+export default app;

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CandidateProfile, InterviewReport } from '@/types/interview';
 import { useTTS } from '@/hooks/useTTS';
+import { apiUrl } from '@/lib/api';
 import type { VoiceEngine, VoiceOption } from '@/hooks/useTTS';
 import { createBasicReport } from '@/lib/basicReport';
 
@@ -110,6 +111,7 @@ export function useVoiceInterview({ messagesRef, profile, sessionId: profileSess
   const restartTimerRef = useRef<number | null>(null); const watchdogRef = useRef<number | null>(null);
   const thinkingWatchdogRef = useRef<number | null>(null); const speechGenerationRef = useRef(0);
   const micActivityIntervalRef = useRef<number | null>(null); const resumeTimerRef = useRef<number | null>(null);
+  const recognitionRefreshRef = useRef<number | null>(null); const listeningWatchdogIntervalRef = useRef<number | null>(null);
   const pendingTurnRef = useRef<(text: string) => void>(() => {}); const recognitionRestartRef = useRef<() => void>(() => {});
   const addIdRef = useRef(0); const generatingReportRef = useRef(false);
   const chatControllersRef = useRef(new Set<AbortController>());
@@ -121,10 +123,12 @@ export function useVoiceInterview({ messagesRef, profile, sessionId: profileSess
   const mediaSourceRef = useRef<MediaElementAudioSourceNode | null>(null); const micSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const objectUrlsRef = useRef<Set<string>>(new Set());
   const currentSentenceRef = useRef(''); const mouthLevelRef = useRef(0); const noiseFloorRef = useRef(0);
+  const conversationSummaryRef = useRef(''); const lastSummaryTurnRef = useRef(0);
   const lastPlayedSentenceRef = useRef(''); const ignoreRecognitionUntilRef = useRef(0); const lastSpeechEndedAtRef = useRef(0);
   const speakerBaselineSumRef = useRef(0); const speakerBaselineSamplesRef = useRef(0); const speakerEchoBaselineRef = useRef(0);
   const speakerFirstSentenceRef = useRef(false); const speakerBaselineReadyRef = useRef(false); const speakerBaselineEndRef = useRef(0);
   const lastMouthTickRef = useRef(0); const lastMicActivityRef = useRef(0);
+  const lastAudioEventAtRef = useRef(Date.now()); const micRecoveryRef = useRef(false); const listeningRecoveryRef = useRef(false);
   const likelyEchoUntilRef = useRef(0);
   const aboveThresholdSinceRef = useRef<number | null>(null); const calibrationRef = useRef(false);
   const lastAssistantIdRef = useRef<number | null>(null); const lastAssistantTextRef = useRef('');
@@ -238,10 +242,11 @@ export function useVoiceInterview({ messagesRef, profile, sessionId: profileSess
     if (!recognition) {
       recognition = new SpeechRecognitionClass(); recognition.lang = 'en-US'; recognition.continuous = true; recognition.interimResults = true; recognition.maxAlternatives = 1;
       recognition.onstart = () => { if (!sessionActiveRef.current || sessionIdRef.current !== sessionId) { try { recognition?.abort(); } catch { /* stale recognition */ } return; } runningRef.current = true; startingRef.current = false; setError(null); console.info('[Vera] recognition onstart'); };
-      recognition.onaudiostart = () => { if (sessionActiveRef.current && sessionIdRef.current === sessionId) console.info('[Vera] recognition onaudiostart'); };
-      recognition.onspeechstart = () => { if (sessionActiveRef.current && sessionIdRef.current === sessionId) console.info('[Vera] recognition onspeechstart'); };
+      recognition.onaudiostart = () => { if (sessionActiveRef.current && sessionIdRef.current === sessionId) { lastAudioEventAtRef.current = Date.now(); console.info('[Vera] recognition onaudiostart'); } };
+      recognition.onspeechstart = () => { if (sessionActiveRef.current && sessionIdRef.current === sessionId) { lastAudioEventAtRef.current = Date.now(); console.info('[Vera] recognition onspeechstart'); } };
       recognition.onresult = (event: SpeechRecognitionEvent) => {
         if (!sessionActiveRef.current || sessionIdRef.current !== sessionId) return;
+        lastAudioEventAtRef.current = Date.now();
         if (mutedRef.current || (turnPendingRef.current && !speakingRef.current)) return;
         let interim = ''; let final = '';
         for (let i = event.resultIndex; i < event.results.length; i += 1) {
@@ -288,7 +293,7 @@ export function useVoiceInterview({ messagesRef, profile, sessionId: profileSess
       };
       recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
         if (!sessionActiveRef.current || sessionIdRef.current !== sessionId) return;
-        console.error('[Vera] recognition onerror:', event.error, event.message);
+        console.error('[Vera] recognition onerror:', { error: event.error, message: event.message, sessionId, state: stateRef.current });
         startingRef.current = false; runningRef.current = false;
         if (event.error === 'not-allowed' || event.error === 'service-not-allowed') { setError('Please allow the microphone in your browser settings'); activeRef.current = false; shouldListenRef.current = false; setInterviewState('idle'); }
         else if (event.error === 'no-speech' || event.error === 'aborted') { /* onend quietly restarts */ }
@@ -297,7 +302,7 @@ export function useVoiceInterview({ messagesRef, profile, sessionId: profileSess
         else setError('Speech recognition stopped unexpectedly. Please try again.');
       };
       recognition.onend = () => {
-        runningRef.current = false; startingRef.current = false; console.info('[Vera] recognition onend');
+        runningRef.current = false; startingRef.current = false; console.info('[Vera] recognition onend', { sessionId, active: sessionActiveRef.current, shouldListen: shouldListenRef.current, state: stateRef.current });
         if (sessionActiveRef.current && sessionIdRef.current === sessionId && shouldListenRef.current && !mutedRef.current) {
           if (restartTimerRef.current) window.clearTimeout(restartTimerRef.current);
           const restartDelay = !headphonesRef.current && !speakingRef.current
@@ -320,6 +325,43 @@ export function useVoiceInterview({ messagesRef, profile, sessionId: profileSess
     }
   }, []);
   recognitionRestartRef.current = startRecognition;
+
+  const refreshRecognition = useCallback((sessionId: number) => {
+    if (!sessionActiveRef.current || sessionIdRef.current !== sessionId || !shouldListenRef.current || stateRef.current !== 'listening') return;
+    const oldRecognition = recognitionRef.current;
+    if (oldRecognition) {
+      oldRecognition.onstart = null; oldRecognition.onaudiostart = null; oldRecognition.onspeechstart = null;
+      oldRecognition.onresult = null; oldRecognition.onerror = null; oldRecognition.onend = null;
+      try { oldRecognition.abort(); } catch { /* recognition may already have stopped */ }
+    }
+    recognitionRef.current = null; runningRef.current = false; startingRef.current = false;
+    if (restartTimerRef.current) window.clearTimeout(restartTimerRef.current);
+    restartTimerRef.current = window.setTimeout(() => {
+      restartTimerRef.current = null;
+      if (sessionActiveRef.current && sessionIdRef.current === sessionId) startRecognition();
+    }, 250);
+    console.info('[Vera] refreshed SpeechRecognition instance after idle interval', { sessionId });
+  }, [startRecognition]);
+
+  const rebuildMicStream = useCallback(async function recoverMic(sessionId: number) {
+    if (micRecoveryRef.current || !sessionActiveRef.current || sessionIdRef.current !== sessionId) return;
+    micRecoveryRef.current = true;
+    try {
+      const replacement = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      if (!sessionActiveRef.current || sessionIdRef.current !== sessionId) { replacement.getTracks().forEach((track) => track.stop()); return; }
+      for (const track of replacement.getAudioTracks()) track.addEventListener('ended', () => { void recoverMic(sessionId); }, { once: true });
+      const previous = micStreamRef.current;
+      try { micSourceRef.current?.disconnect(); } catch { /* source may already be disconnected */ }
+      micSourceRef.current = null; micAnalyserRef.current = null; micStreamRef.current = replacement;
+      await setupAudio();
+      previous?.getTracks().forEach((track) => track.stop());
+      lastAudioEventAtRef.current = Date.now();
+      console.info('[Vera] microphone stream rebuilt after track ended', { sessionId });
+    } catch (error) {
+      console.error('[Vera] microphone stream rebuild failed:', error);
+      setError('Your microphone disconnected. Reconnect it and try again.');
+    } finally { micRecoveryRef.current = false; }
+  }, [setupAudio]);
 
   function updateHeard() {
     const combined = `${pendingTextRef.current} ${interimRef.current}`.trim();
@@ -566,9 +608,20 @@ export function useVoiceInterview({ messagesRef, profile, sessionId: profileSess
     inFlightTurnKeyRef.current = turnRequestKey;
     const streamSequence = ++streamSequenceRef.current;
     addTranscript('user', trimmed); messagesRef.current.push({ role: 'user', content: trimmed }); setInterviewState('thinking');
-    if (thinkingWatchdogRef.current) window.clearTimeout(thinkingWatchdogRef.current);
-    thinkingWatchdogRef.current = window.setTimeout(() => { if (sessionActiveRef.current && sessionIdRef.current === sessionId && streamSequenceRef.current === streamSequence && stateRef.current === 'thinking') { setError('Vera is taking too long to respond. Please try again.'); resumeListening(); } }, 14_000);
     const controller = new AbortController(); activeChatControllerRef.current = controller; chatControllersRef.current.add(controller);
+    if (thinkingWatchdogRef.current) window.clearTimeout(thinkingWatchdogRef.current);
+    thinkingWatchdogRef.current = window.setTimeout(() => {
+      if (!sessionActiveRef.current || sessionIdRef.current !== sessionId || streamSequenceRef.current !== streamSequence || stateRef.current !== 'thinking') return;
+      console.warn('[Vera] thinking watchdog recovered stalled turn', { turn: timingRef.current.turnId });
+      controller.abort(); activeChatControllerRef.current = null;
+      streamSequenceRef.current += 1; inFlightTurnKeyRef.current = null;
+      turnPendingRef.current = false; setRetryingChat(false);
+      thinkingWatchdogRef.current = null;
+      setError('I’m still here. Go ahead when you’re ready.');
+      const prompt = "I'm still here. Go ahead when you're ready.";
+      addTranscript('assistant', prompt); messagesRef.current.push({ role: 'assistant', content: prompt });
+      void speakReply(prompt);
+    }, 15_000);
     const timeout = window.setTimeout(() => controller.abort(), 20_500); chatTimeoutsRef.current.add(timeout);
     let playback = Promise.resolve(); let streamedReply = ''; let gotFallback = false; let firstSentenceLogged = false;
     const enqueueSentence = (sentence: string) => {
@@ -586,23 +639,29 @@ export function useVoiceInterview({ messagesRef, profile, sessionId: profileSess
     };
     try {
       const fullMessages = messagesRef.current;
+      const candidateTurns = fullMessages.filter((message) => message.role === 'user').length;
+      if (candidateTurns - lastSummaryTurnRef.current >= 4) {
+        conversationSummaryRef.current = summarizeEarlierTurns(fullMessages).slice(0, 1200);
+        lastSummaryTurnRef.current = candidateTurns;
+      }
       const payload = {
         messages: fullMessages.slice(-8),
         profileSummary: compactProfile(profileRef.current),
-        conversationSummary: summarizeEarlierTurns(fullMessages),
+        conversationSummary: conversationSummaryRef.current,
         sessionId: profileSessionId,
         turnId: timingRef.current.turnId,
       };
       const sentAt = performance.now();
       console.info('[Vera timing] request sent', { at: sentAt, sessionId, messageCount: payload.messages.length, contextCharacters: payload.conversationSummary.length });
-      const response = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' }, body: JSON.stringify(payload), signal: controller.signal });
+      const response = await fetch(apiUrl('/api/chat'), { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' }, body: JSON.stringify(payload), signal: controller.signal });
       if (!sessionActiveRef.current || sessionIdRef.current !== sessionId) return;
       setRetryingChat(false);
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
         const detail = typeof data.detail === 'string' ? data.detail : '';
         console.error('[Vera chat] API rejected request', { status: response.status, error: data.error, detail });
-        setError(response.status === 400 ? 'Vera could not use that turn. Please try saying it again.'
+        setError(response.status === 404 ? "I can't reach Vera's server right now. Try again in a moment,"
+          : response.status === 400 ? 'Vera could not use that turn. Please try saying it again.'
           : response.status === 401 ? 'Vera could not connect to the interview service. Please try again later.'
             : response.status === 429 ? 'Vera is busy for a moment. Please try again shortly.'
               : response.status >= 500 ? 'Vera’s interview service is temporarily unavailable.' : 'Vera lost the connection for a moment.');
@@ -618,10 +677,10 @@ export function useVoiceInterview({ messagesRef, profile, sessionId: profileSess
         if (event === 'sentence') enqueueSentence(data.text || '');
         if (event === 'fallback') {
           gotFallback = true;
-          const fallback = data.reply || 'Sorry, I lost that for a second. Could you say it again?';
+          const fallback = data.reply || 'Sorry, give me a second. Could you repeat that?';
           if (data.friendlyMessage) setError(data.friendlyMessage);
           enqueueSentence(fallback);
-          const assistantReply = `${streamedReply.trim()} ${fallback}`.trim();
+          const assistantReply = streamedReply.trim() || fallback;
           addTranscript('assistant', assistantReply); messagesRef.current.push({ role: 'assistant', content: assistantReply });
         }
         if (event === 'done') {
@@ -640,9 +699,9 @@ export function useVoiceInterview({ messagesRef, profile, sessionId: profileSess
       if (buffer.trim()) handleFrame(buffer);
       if (!streamedReply) {
         gotFallback = true;
-        enqueueSentence('Sorry, I lost that for a second. Could you say it again?');
-        addTranscript('assistant', 'Sorry, I lost that for a second. Could you say it again?');
-        messagesRef.current.push({ role: 'assistant', content: 'Sorry, I lost that for a second. Could you say it again?' });
+        enqueueSentence('Sorry, give me a second. Could you repeat that?');
+        addTranscript('assistant', 'Sorry, give me a second. Could you repeat that?');
+        messagesRef.current.push({ role: 'assistant', content: 'Sorry, give me a second. Could you repeat that?' });
       }
       await playback;
       if (!sessionActiveRef.current || sessionIdRef.current !== sessionId || streamSequenceRef.current !== streamSequence) return;
@@ -654,8 +713,10 @@ export function useVoiceInterview({ messagesRef, profile, sessionId: profileSess
       setRetryingChat(false);
       if (thinkingWatchdogRef.current) window.clearTimeout(thinkingWatchdogRef.current);
       console.warn('[Vera timing] chat failed; speaking fallback', { reason: err instanceof Error ? err.message : String(err) });
-      const fallback = 'Sorry, I lost that for a second. Could you say it again?';
-      if (!error) setError('Vera could not reach the interview service. Please try your answer again.');
+      const fallback = 'Sorry, give me a second. Could you repeat that?';
+      if (!error) setError(err instanceof TypeError || (err instanceof DOMException && err.name === 'AbortError')
+        ? "I can't reach Vera's server right now. Try again in a moment,"
+        : 'Vera could not reach the interview service. Please try your answer again.');
       addTranscript('assistant', fallback); messagesRef.current.push({ role: 'assistant', content: fallback });
       turnPendingRef.current = false;
       await speakReply(fallback);
@@ -684,7 +745,7 @@ export function useVoiceInterview({ messagesRef, profile, sessionId: profileSess
     const timeout = window.setTimeout(() => controller.abort(), 46_000);
     console.info('[Vera report timing] request started', { turns: entries.length, approximateTokens: Math.ceil(entries.reduce((sum, entry) => sum + entry.text.length, 0) / 4), at: startedAt });
     try {
-      const response = await fetch('/api/report', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' }, body: JSON.stringify({ transcript: entries, profile: profileRef.current }), signal: controller.signal });
+      const response = await fetch(apiUrl('/api/report'), { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' }, body: JSON.stringify({ transcript: entries, profile: profileRef.current }), signal: controller.signal });
       if (!response.ok || !response.body) throw new Error(`Report request failed (${response.status})`);
       const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = ''; let report: InterviewReport | null = null;
       const handleFrame = (frame: string) => {
@@ -721,11 +782,13 @@ export function useVoiceInterview({ messagesRef, profile, sessionId: profileSess
     console.info('[Vera timing] Begin clicked', { at: timingRef.current.beginAt, sessionId });
     setError(null); setInterviewState('idle');
     setHeardText(''); setHasSpeechPending(false); setTranscript([]); transcriptRef.current = []; pendingTextRef.current = ''; interimRef.current = ''; turnPendingRef.current = false;
+    conversationSummaryRef.current = ''; lastSummaryTurnRef.current = 0;
     try {
       if (!navigator.mediaDevices?.getUserMedia) throw new Error('Microphone access is not available in this browser.');
       const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
       if (!sessionActiveRef.current || sessionIdRef.current !== sessionId) { stream.getTracks().forEach((track) => track.stop()); return; }
       micStreamRef.current = stream;
+      for (const track of stream.getAudioTracks()) track.addEventListener('ended', () => { void rebuildMicStream(sessionId); }, { once: true });
       await setupAudio(); setError(null);
     } catch (err) {
       const denied = err instanceof DOMException && ['NotAllowedError', 'PermissionDeniedError'].includes(err.name);
@@ -734,6 +797,7 @@ export function useVoiceInterview({ messagesRef, profile, sessionId: profileSess
     }
     if (!sessionActiveRef.current || sessionIdRef.current !== sessionId) return;
     shouldListenRef.current = true; ignoreRecognitionUntilRef.current = 0;
+    lastAudioEventAtRef.current = Date.now();
     const greeting = openingGreeting(profileRef.current);
     addTranscript('assistant', greeting); messagesRef.current = [{ role: 'assistant', content: greeting }];
     void calibrateMic(sessionId);
@@ -744,9 +808,28 @@ export function useVoiceInterview({ messagesRef, profile, sessionId: profileSess
       let sum = 0; for (const value of data) { const x = (value - 128) / 128; sum += x * x; }
       if (Math.sqrt(sum / data.length) > noiseFloorRef.current + (headphonesRef.current ? 0.018 : 0.04) && performance.now() - lastMicActivityRef.current > 300) { lastMicActivityRef.current = performance.now(); markSpeechActivity(); }
     }, 100);
+    if (recognitionRefreshRef.current !== null) window.clearInterval(recognitionRefreshRef.current);
+    recognitionRefreshRef.current = window.setInterval(() => {
+      if (sessionActiveRef.current && sessionIdRef.current === sessionId && stateRef.current === 'listening'
+        && !pendingTextRef.current && !interimRef.current && !turnPendingRef.current) refreshRecognition(sessionId);
+    }, 50_000);
+    if (listeningWatchdogIntervalRef.current !== null) window.clearInterval(listeningWatchdogIntervalRef.current);
+    listeningWatchdogIntervalRef.current = window.setInterval(() => {
+      if (!sessionActiveRef.current || sessionIdRef.current !== sessionId || stateRef.current !== 'listening'
+        || Date.now() - lastAudioEventAtRef.current < 60_000 || listeningRecoveryRef.current) return;
+      listeningRecoveryRef.current = true; lastAudioEventAtRef.current = Date.now();
+      console.warn('[Vera] listening watchdog recovered after 60s without audio events', { sessionId });
+      for (const pendingController of chatControllersRef.current) pendingController.abort();
+      streamSequenceRef.current += 1; activeChatControllerRef.current = null; inFlightTurnKeyRef.current = null;
+      turnPendingRef.current = false; pendingTextRef.current = ''; interimRef.current = ''; setHeardText('');
+      setError('I’m still here. Go ahead when you’re ready.'); setInterviewState('thinking');
+      const prompt = "I'm still here. Go ahead when you're ready.";
+      addTranscript('assistant', prompt); messagesRef.current.push({ role: 'assistant', content: prompt });
+      void speakReply(prompt).finally(() => { listeningRecoveryRef.current = false; });
+    }, 5_000);
     if (audioFrameRef.current === null) audioFrameRef.current = requestAnimationFrame(audioLoop);
     startRecognition(); speakReply(greeting);
-  }, [addTranscript, audioLoop, calibrateMic, messagesRef, setInterviewState, setupAudio, speakReply, startRecognition]);
+  }, [addTranscript, audioLoop, calibrateMic, messagesRef, rebuildMicStream, refreshRecognition, setInterviewState, setupAudio, speakReply, startRecognition]);
 
   const endInterview = useCallback((options: { quiet?: boolean } = {}) => {
     if (endedSessionRef.current) return transcriptRef.current;
@@ -761,8 +844,11 @@ export function useVoiceInterview({ messagesRef, profile, sessionId: profileSess
     for (const timer of [silenceTimerRef.current, restartTimerRef.current, watchdogRef.current, thinkingWatchdogRef.current, resumeTimerRef.current]) if (timer !== null) window.clearTimeout(timer);
     if (countdownTimerRef.current !== null) window.clearInterval(countdownTimerRef.current);
     if (micActivityIntervalRef.current !== null) window.clearInterval(micActivityIntervalRef.current);
+    if (recognitionRefreshRef.current !== null) window.clearInterval(recognitionRefreshRef.current);
+    if (listeningWatchdogIntervalRef.current !== null) window.clearInterval(listeningWatchdogIntervalRef.current);
     silenceTimerRef.current = null; restartTimerRef.current = null; watchdogRef.current = null; thinkingWatchdogRef.current = null;
     resumeTimerRef.current = null; countdownTimerRef.current = null; micActivityIntervalRef.current = null;
+    recognitionRefreshRef.current = null; listeningWatchdogIntervalRef.current = null;
     calibrationRef.current = false; cancelPlayback(); tts.cancelPending(true);
     const recognition = recognitionRef.current;
     if (recognition) {

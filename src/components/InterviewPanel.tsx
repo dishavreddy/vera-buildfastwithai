@@ -15,10 +15,11 @@ import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { LandingScreen } from '@/components/LandingScreen';
 import { Stepper, Tag } from '@/components/ui/Primitives';
-import { warmApi } from '@/lib/api';
+import { apiUrl, warmApi } from '@/lib/api';
 import type { CandidateProfile, InterviewReport } from '@/types/interview';
 
 type Phase = 'setup' | 'interview' | 'report';
+const TRANSCRIPT_DRAFT_KEY = 'vera.interview.transcript.v1';
 
 async function fetchWithRetry(
   url: string,
@@ -33,7 +34,7 @@ async function fetchWithRetry(
     onController?.(controller);
     const timeout = window.setTimeout(() => controller.abort(), 30_000);
     try {
-      const response = await fetch(url, { ...init, signal: controller.signal });
+      const response = await fetch(apiUrl(url), { ...init, signal: controller.signal });
       console.info(`[Vera upload] ${label} response:`, { status: response.status, attempt: attempt + 1 });
       if (response.status >= 500 && attempt === 0) {
         await response.body?.cancel().catch(() => {});
@@ -62,9 +63,18 @@ async function fetchWithRetry(
 
 function friendlyResumeError(error: unknown) {
   if (error instanceof TypeError || (error instanceof DOMException && error.name === 'AbortError')) {
-    return 'Something went wrong reading your resume. Try again or paste your text instead.';
+    return "I can't reach Vera's server right now. Try again in a moment,";
   }
   return error instanceof Error ? error.message : 'Something went wrong reading your resume. Try again or paste your text instead.';
+}
+
+function resumeApiError(status: number, code?: string) {
+  if (status === 404) return "I can't reach Vera's server right now. Try again in a moment,";
+  if (status === 413 || code === 'FILE_TOO_LARGE') return 'That file is too big. Please use a PDF under 5 MB.';
+  if (status === 422 || code === 'PDF_NO_TEXT') return "I couldn't read text from that PDF. It might be a scan. Try another file or paste your resume text instead.";
+  if (code === 'NO_KEY') return 'Vera is using a basic profile because the AI service is not configured on the server.';
+  if (code === 'TIMEOUT') return 'Resume analysis took too long. Please try again or paste your text instead.';
+  return 'Something went wrong reading your resume. Try again or paste your text instead.';
 }
 
 const PROFILE_SKILL_KEYWORDS = ['JavaScript', 'TypeScript', 'Python', 'Java', 'C#', 'C++', 'Go', 'Rust', 'Ruby', 'PHP', 'SQL', 'PostgreSQL', 'MySQL', 'MongoDB', 'Redis', 'React', 'Next.js', 'Node.js', 'Express', 'Angular', 'Vue', 'Svelte', 'HTML', 'CSS', 'Tailwind', 'AWS', 'Azure', 'GCP', 'Docker', 'Kubernetes', 'Terraform', 'Git', 'GraphQL', 'REST', 'Machine Learning', 'TensorFlow', 'PyTorch', 'Figma', 'Agile', 'Scrum', 'Linux', 'Firebase', 'Supabase', 'Jest', 'Playwright'];
@@ -84,6 +94,7 @@ export function InterviewPanel() {
   const [profile, setProfile] = useState<CandidateProfile | null>(null);
   const [parsing, setParsing] = useState(false);
   const [parseError, setParseError] = useState<string | null>(null);
+  const [serverWarming, setServerWarming] = useState(true);
   const [pasteText, setPasteText] = useState('');
   const [report, setReport] = useState<InterviewReport | null>(null);
   const [reportError, setReportError] = useState<string | null>(null);
@@ -113,8 +124,9 @@ export function InterviewPanel() {
   const uploadGenerationRef = useRef(0);
   const uploadControllerRef = useRef<AbortController | null>(null);
   const profileBuildInFlightRef = useRef(false);
+  const transcriptRecoveryStartedRef = useRef(false);
 
-  useEffect(() => { void warmApi(); }, []);
+  useEffect(() => { void warmApi().then((ready) => setServerWarming(!ready)); }, []);
 
   // Auto-dismiss toast after 5s
   useEffect(() => {
@@ -143,6 +155,9 @@ export function InterviewPanel() {
     setReport(r);
     setReportLoading(false);
     setReportError(null);
+    if (!r.basicReport) {
+      try { localStorage.removeItem(TRANSCRIPT_DRAFT_KEY); } catch { /* storage may be unavailable */ }
+    }
     setPhase('report');
   }, []);
 
@@ -165,6 +180,28 @@ export function InterviewPanel() {
     onReportError: handleReportError,
     onReportProgress: handleReportProgress,
   });
+
+  useEffect(() => {
+    if (phase !== 'interview' || transcript.length === 0) return;
+    try { localStorage.setItem(TRANSCRIPT_DRAFT_KEY, JSON.stringify(transcript)); }
+    catch (error) { console.warn('[Vera] could not persist interview transcript:', error); }
+  }, [phase, transcript]);
+
+  useEffect(() => {
+    if (transcriptRecoveryStartedRef.current) return;
+    transcriptRecoveryStartedRef.current = true;
+    try {
+      const saved = localStorage.getItem(TRANSCRIPT_DRAFT_KEY);
+      if (!saved) return;
+      const entries = JSON.parse(saved) as TranscriptEntry[];
+      if (!Array.isArray(entries) || !entries.some((entry) => entry?.role === 'user' && typeof entry.text === 'string')) {
+        localStorage.removeItem(TRANSCRIPT_DRAFT_KEY); return;
+      }
+      console.info('[Vera] recovering saved interview transcript for report', { turns: entries.length });
+      setFinalTranscript(entries); setReportLoading(true); setReportProgress('Reading saved answers...'); setPhase('report');
+      void generateReport(entries);
+    } catch (error) { console.warn('[Vera] could not recover saved interview transcript:', error); }
+  }, [generateReport]);
 
   // Interruption detection: when speech was happening and candidate barges in
   useEffect(() => {
@@ -250,14 +287,14 @@ export function InterviewPanel() {
       if (generation !== undefined && generation !== uploadGenerationRef.current) return;
       if (!profileResponse.ok) {
         const failure = await profileResponse.json().catch(() => ({}));
-        throw new Error(failure.error || 'Something went wrong reading your resume. Try again or paste your text instead.');
+        throw new Error(resumeApiError(profileResponse.status, failure.code));
       }
       const profileData = await profileResponse.json();
       const parsedProfile = { ...profileData.profile, basicProfile: Boolean(profileData.basicProfile || profileData.profile?.basicProfile) } as CandidateProfile;
       if (parsedProfile.basicProfile) console.warn('[Vera profile] using local basic profile:', { error: profileData.error, upstreamStatus: profileData.upstreamStatus, detail: profileData.detail });
       setProfile(parsedProfile);
       console.info('[Vera timing] resume profile ready', { at: performance.now() });
-      void fetch('/api/warm-chat', { method: 'POST' }).then((response) => {
+      void fetch(apiUrl('/api/warm-chat'), { method: 'POST' }).then((response) => {
         console.info('[Vera timing] chat warm-up completed', { at: performance.now(), status: response.status });
       }).catch((error) => console.info('[Vera] optional chat warm-up unavailable:', error));
     } catch (err) {
@@ -266,7 +303,7 @@ export function InterviewPanel() {
       setProfile(localProfile);
       console.warn('[Vera profile] profile service failed; using local profile for this session:', friendlyResumeError(err));
       console.info('[Vera timing] local resume profile ready', { at: performance.now() });
-      void fetch('/api/warm-chat', { method: 'POST' }).catch(() => {});
+      void fetch(apiUrl('/api/warm-chat'), { method: 'POST' }).catch(() => {});
     } finally {
       setParsing(false);
       profileBuildInFlightRef.current = false;
@@ -294,9 +331,12 @@ export function InterviewPanel() {
 
     setParsing(true);
     uploadInFlightRef.current = true;
+    setServerWarming(true);
     try {
-      await warmApi();
+      const serverReady = await warmApi();
       if (generation !== uploadGenerationRef.current) return;
+      setServerWarming(!serverReady);
+      if (!serverReady) throw new Error("Vera's server is still waking up. Please try again in a moment.");
       // 1. Send file via FormData to POST /api/parse-resume
       const formData = new FormData();
       formData.append('resume', file);
@@ -308,11 +348,8 @@ export function InterviewPanel() {
       if (generation !== uploadGenerationRef.current) return;
 
       if (!parseResponse.ok) {
-        const messages: Record<number, string> = {
-          422: "I couldn't read text from that PDF. It might be a scan. Try another file or paste your resume text instead.",
-          413: 'That file is too big. Please use a PDF under 5 MB.',
-        };
-        throw new Error(messages[parseResponse.status] || 'Something went wrong reading your resume. Try again or paste your text instead.');
+        const failure = await parseResponse.json().catch(() => ({}));
+        throw new Error(resumeApiError(parseResponse.status, failure.code));
       }
 
       const { text } = await parseResponse.json();
@@ -342,6 +379,7 @@ export function InterviewPanel() {
     endingRef.current = false;
     setWrappingUp(false);
     stopMicCheck();
+    try { localStorage.removeItem(TRANSCRIPT_DRAFT_KEY); } catch { /* storage may be unavailable */ }
     setReport(null);
     setReportError(null);
     setReportLoading(false);
@@ -356,6 +394,7 @@ export function InterviewPanel() {
     console.info('[Vera] End confirmation accepted');
     const entries = endInterview();
     setFinalTranscript(entries);
+    try { localStorage.setItem(TRANSCRIPT_DRAFT_KEY, JSON.stringify(entries)); } catch { /* storage may be unavailable */ }
     setWrappingUp(true);
     setReportLoading(true);
     setReportProgress('Reading answers...');
@@ -381,6 +420,7 @@ export function InterviewPanel() {
   }, [showEndConfirm]);
 
   const handleRestart = () => {
+    try { localStorage.removeItem(TRANSCRIPT_DRAFT_KEY); } catch { /* storage may be unavailable */ }
     setPhase('setup');
     setReport(null);
     setReportError(null);
@@ -543,6 +583,7 @@ export function InterviewPanel() {
               className="w-full"
             >
               <LandingScreen
+                serverWarming={serverWarming}
                 profile={profile}
                 parsing={parsing}
                 parseError={parseError}

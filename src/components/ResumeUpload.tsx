@@ -50,6 +50,18 @@ export function ResumeUpload({
     onFileSelected(file);
   };
 
+  const handleSample = async () => {
+    setLocalError(null);
+    try {
+      const response = await fetch(`${import.meta.env.BASE_URL}sample-resume.pdf`);
+      if (!response.ok) throw new Error('Sample resume is unavailable.');
+      const sample = new File([await response.blob()], 'sample-resume.pdf', { type: 'application/pdf' });
+      handleFile(sample);
+    } catch {
+      setLocalError('Sample resume is unavailable. Please upload a PDF or paste your resume text.');
+    }
+  };
+
   const handleRemove = () => {
     setFileName(null);
     setFileSize(null);
@@ -79,6 +91,7 @@ export function ResumeUpload({
       />
 
       {!fileName ? (
+        <div>
         <button
           type="button"
           onClick={() => inputRef.current?.click()}
@@ -122,6 +135,9 @@ export function ResumeUpload({
             </span>
           </div>
         </button>
+        <button type="button" onClick={() => void handleSample()} disabled={disabled || parsing} className="mt-3 min-h-11 px-2 text-xs text-text-secondary hover:text-text-primary disabled:opacity-40">Try a sample</button>
+        {localError && <p role="alert" className="text-xs text-rose-200">{localError}</p>}
+        </div>
       ) : (
         <div className="w-full flex flex-col gap-3">
           <div
