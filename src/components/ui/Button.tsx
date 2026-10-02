@@ -11,19 +11,19 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 
 const VARIANTS: Record<Variant, string> = {
   primary:
-    'bg-accent-500 text-background hover:bg-accent-400 active:bg-accent-600 glow-accent',
+    'bg-accent-500 text-black font-bold hover:scale-105 active:scale-[0.98] primary-glow border border-accent-300/50',
   secondary:
-    'glass text-text-primary hover:bg-surface-hover active:bg-surface-active',
+    'glass text-text-primary hover:bg-white/[0.08] hover:border-accent-300/30 active:bg-white/[0.1] active:scale-[0.98]',
   ghost:
-    'text-text-secondary hover:text-text-primary hover:bg-surface-hover',
+    'text-text-secondary hover:text-text-primary hover:bg-white/5 active:scale-[0.98]',
   danger:
-    'bg-error-500/15 text-error-400 border border-error-500/30 hover:bg-error-500/25 active:bg-error-500/20',
+    'bg-rose-400/10 text-rose-200 border border-rose-300/30 hover:bg-rose-400/20 active:bg-rose-400/15 active:scale-[0.98]',
 };
 
 const SIZES: Record<Size, string> = {
-  sm: 'px-3 py-1.5 text-xs rounded-lg gap-1.5',
-  md: 'px-4 py-2.5 text-sm rounded-xl gap-2',
-  lg: 'px-6 py-3.5 text-base rounded-2xl gap-2.5',
+  sm: 'px-4 py-2 text-xs rounded-full gap-1.5 min-h-10',
+  md: 'px-5 py-3 text-sm rounded-full gap-2 min-h-11',
+  lg: 'px-7 py-4 text-base rounded-full gap-2.5 min-h-12',
 };
 
 export function Button({
@@ -40,9 +40,8 @@ export function Button({
       disabled={disabled}
       className={[
         'inline-flex items-center justify-center font-semibold tracking-tight',
-        'transition-all duration-200 ease-out',
-        'disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none',
-        'active:scale-[0.98]',
+        'transition-transform duration-200 ease-out outline-none focus-visible:ring-2 focus-visible:ring-accent-500',
+        'disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none disabled:active:scale-100',
         VARIANTS[variant],
         SIZES[size],
         className,

@@ -16,7 +16,15 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'http://localhost:3001',
+        target: `http://localhost:${process.env.VERA_API_PORT || 3001}`,
+        changeOrigin: true,
+      },
+    },
+  },
+  preview: {
+    proxy: {
+      '/api': {
+        target: `http://localhost:${process.env.VERA_API_PORT || 3001}`,
         changeOrigin: true,
       },
     },

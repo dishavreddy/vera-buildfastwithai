@@ -10,7 +10,7 @@ export function Card({ children, className = '', glow = false }: CardProps) {
   return (
     <div
       className={[
-        'glass rounded-2xl p-5 transition-all duration-200',
+        'glass rounded-[2rem] p-5 transition-transform duration-200 hover-lime',
         glow ? 'glow-accent' : '',
         className,
       ]
@@ -21,3 +21,5 @@ export function Card({ children, className = '', glow = false }: CardProps) {
     </div>
   );
 }
+
+export const GlassCard = Card;

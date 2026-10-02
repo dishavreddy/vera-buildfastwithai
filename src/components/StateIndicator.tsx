@@ -1,10 +1,14 @@
 import { motion } from 'framer-motion';
 import type { InterviewState } from '@/hooks/useVoiceInterview';
-import { Avatar } from '@/components/Avatar';
+import { VeraAvatar } from '@/components/VeraAvatar';
 import { StatusPill } from '@/components/ui/StatusPill';
 
 interface StateIndicatorProps {
   state: InterviewState;
+  speaking?: boolean;
+  wordTick?: number;
+  isInterrupted?: boolean;
+  audioLevel?: number;
 }
 
 const STATE_CONFIG: Record<
@@ -21,53 +25,66 @@ const STATE_CONFIG: Record<
   listening: {
     label: 'Listening',
     pillLabel: 'Listening...',
-    sublabel: 'Speak naturally — Vera is hearing you',
+    sublabel: 'Speak naturally — Vera is listening',
     pillColor: 'success',
     pulse: true,
   },
   thinking: {
     label: 'Thinking',
     pillLabel: 'Thinking...',
-    sublabel: 'Processing your response',
+    sublabel: 'Analyzing your response',
     pillColor: 'warning',
     pulse: false,
   },
   speaking: {
     label: 'Speaking',
     pillLabel: 'Vera is speaking',
-    sublabel: 'Vera is responding — speak to interrupt',
+    sublabel: 'Speak anytime to interrupt',
     pillColor: 'accent',
     pulse: false,
   },
 };
 
-export function StateIndicator({ state }: StateIndicatorProps) {
+export function StateIndicator({
+  state,
+  speaking = false,
+  wordTick = 0,
+  isInterrupted = false,
+  audioLevel,
+}: StateIndicatorProps) {
   const config = STATE_CONFIG[state];
 
   return (
-    <div className="flex flex-col items-center gap-6 py-6">
-      {/* Avatar */}
+    <div className="flex flex-col items-center gap-5 py-4">
+      {/* Vera SVG Avatar */}
       <motion.div
-        key={state}
-        initial={{ scale: 0.92, opacity: 0.5 }}
+        key="avatar"
+        initial={{ scale: 0.95, opacity: 0.8 }}
         animate={{ scale: 1, opacity: 1 }}
-        transition={{ duration: 0.4, ease: 'easeOut' }}
+        transition={{ duration: 0.3, ease: 'easeOut' }}
       >
-        <Avatar state={state} size={220} />
+        <VeraAvatar
+          state={state}
+          audioLevel={audioLevel}
+          micLevel={0}
+          wordTick={wordTick}
+          interrupted={isInterrupted}
+          size={240}
+        />
       </motion.div>
 
-      {/* Status pill */}
+      {/* Status pill directly underneath */}
       <motion.div
         key={`pill-${state}`}
-        initial={{ y: 8, opacity: 0 }}
+        initial={{ y: 6, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
-        transition={{ duration: 0.3, ease: 'easeOut' }}
+        transition={{ duration: 0.25, ease: 'easeOut' }}
       >
         <StatusPill label={config.pillLabel} color={config.pillColor} pulse={config.pulse} />
       </motion.div>
 
-      {/* Sublabel */}
-      <p className="text-sm text-text-muted text-center max-w-xs">{config.sublabel}</p>
+      {/* Helper hint */}
+      <p className="text-xs text-text-muted text-center max-w-xs">{config.sublabel}</p>
     </div>
   );
 }
