@@ -2,7 +2,7 @@
 
 ## Vercel (frontend and API in one project)
 
-Vercel serves the Vite frontend and routes `/api/*` to the Express app through the catch-all function in `api/[...path].js`. The function imports the app from `server/index.js`; Express handles the original `/api/...` route. `vercel.json` sets the function duration to 60 seconds. Vercel invokes this function per request, so no separate backend process or external backend URL is needed. The Express app skips `app.listen` when `VERCEL` is set.
+Vercel serves the Vite frontend and runs the existing Express app from `server/index.js` as serverless functions. `api/health.js` and `api/parse-resume.js` explicitly expose the required production routes; other API requests use `api/[...path].js`. These function entry points delegate to Express rather than duplicating route logic. `vercel.json` sets a 60-second function duration. No separate backend process or external backend URL is needed. The Express app skips `app.listen` when `VERCEL` is set.
 
 `VITE_API_URL` is optional. Leave it unset for same-origin `/api/...` requests. If set, it must be the base URL only, without `/api` or a trailing slash; rebuild and redeploy after changing it.
 

@@ -2,6 +2,12 @@
   "functions": {
     "api/[...path].js": {
       "maxDuration": 60
+    },
+    "api/health.js": {
+      "maxDuration": 60
+    },
+    "api/parse-resume.js": {
+      "maxDuration": 60
     }
   }
 }

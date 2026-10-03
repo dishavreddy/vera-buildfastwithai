@@ -352,6 +352,7 @@ const uploadResumeFile = (req, res, next) => {
       console.error(`[Vera upload ${req.resumeRequestId}] multipart error:`, err.stack || err);
       return res.status(400).json({ error: err.message || 'File upload failed.' });
     }
+    console.info('[Vera] received resume:', req.file?.originalname);
     console.info(`[Vera upload ${req.resumeRequestId}] multer complete`, { fileSize: req.file?.size ?? null, fieldName: req.file?.fieldname ?? null, mimetype: req.file?.mimetype ?? null });
     next();
   });
@@ -798,17 +799,17 @@ app.post('/api/report', async (req, res) => {
   } finally { clearTimeout(budgetTimer); }
 });
 app.get('/api/health', (_req, res) => {
-  res.json({
-    status: 'ok',
-    groqConfigured: Boolean(GROQ_API_KEY),
-    uptimeMs: Date.now() - serverStartedAt,
-  });
+  res.status(200).json({ status: 'ok' });
 });
+console.log('[Vera] health route registered');
 
 if (!process.env.VERCEL) {
   app.listen(PORT, '0.0.0.0', () => {
+    console.log('[Vera] backend started');
     console.log(`[Vera] Backend listening on 0.0.0.0:${PORT}`);
   });
+} else {
+  console.log('[Vera] backend started');
 }
 
 export default app;

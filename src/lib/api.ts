@@ -1,6 +1,7 @@
 let healthRequest: Promise<boolean> | null = null;
 
 const API = (import.meta.env.VITE_API_URL ?? '').replace(/\/+$/, '');
+if (typeof window !== 'undefined') console.info('[Vera] API URL:', API || window.location.origin);
 
 export function apiUrl(path: string): string {
   return `${API}${path.startsWith('/') ? path : `/${path}`}`;
