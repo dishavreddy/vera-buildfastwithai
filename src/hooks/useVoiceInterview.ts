@@ -117,23 +117,20 @@ export function useVoiceInterview({ messagesRef, profile, sessionId: profileSess
   const chatControllersRef = useRef(new Set<AbortController>());
   const chatTimeoutsRef = useRef(new Set<number>());
   const transientTimersRef = useRef(new Map<number, () => void>());
-  const audioRef = useRef<HTMLAudioElement | null>(null); const audioContextRef = useRef<AudioContext | null>(null);
-  const outputAnalyserRef = useRef<AnalyserNode | null>(null); const micAnalyserRef = useRef<AnalyserNode | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null); const micAnalyserRef = useRef<AnalyserNode | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null); const audioFrameRef = useRef<number | null>(null);
-  const mediaSourceRef = useRef<MediaElementAudioSourceNode | null>(null); const micSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  const objectUrlsRef = useRef<Set<string>>(new Set());
+  const micSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const currentSentenceRef = useRef(''); const mouthLevelRef = useRef(0); const noiseFloorRef = useRef(0);
   const conversationSummaryRef = useRef(''); const lastSummaryTurnRef = useRef(0);
   const lastPlayedSentenceRef = useRef(''); const ignoreRecognitionUntilRef = useRef(0); const lastSpeechEndedAtRef = useRef(0);
   const speakerBaselineSumRef = useRef(0); const speakerBaselineSamplesRef = useRef(0); const speakerEchoBaselineRef = useRef(0);
   const speakerFirstSentenceRef = useRef(false); const speakerBaselineReadyRef = useRef(false); const speakerBaselineEndRef = useRef(0);
-  const lastMouthTickRef = useRef(0); const lastMicActivityRef = useRef(0);
+  const lastMicActivityRef = useRef(0);
   const lastAudioEventAtRef = useRef(Date.now()); const micRecoveryRef = useRef(false); const listeningRecoveryRef = useRef(false);
   const likelyEchoUntilRef = useRef(0);
   const aboveThresholdSinceRef = useRef<number | null>(null); const calibrationRef = useRef(false);
   const lastAssistantIdRef = useRef<number | null>(null); const lastAssistantTextRef = useRef('');
   const timingRef = useRef({ beginAt: 0, turnEndedAt: 0, firstAudioLogged: false, turnId: 0, firstAudioTurnId: -1, turnAudioMs: [] as number[] });
-  const openingAudioRef = useRef<{ sentence: string; audio: Promise<Blob> } | null>(null);
   const streamSequenceRef = useRef(0); const activeChatControllerRef = useRef<AbortController | null>(null); const inFlightTurnKeyRef = useRef<string | null>(null);
 
   useEffect(() => { profileRef.current = profile; }, [profile]);
@@ -165,8 +162,6 @@ export function useVoiceInterview({ messagesRef, profile, sessionId: profileSess
   const cancelPlayback = useCallback(() => {
     speechGenerationRef.current += 1;
     tts.cancelPending();
-    const audio = audioRef.current; if (audio) { audio.pause(); audio.removeAttribute('src'); audio.load(); }
-    for (const url of objectUrlsRef.current) URL.revokeObjectURL(url); objectUrlsRef.current.clear();
     if ('speechSynthesis' in window) window.speechSynthesis.cancel();
     if (watchdogRef.current) window.clearTimeout(watchdogRef.current);
     if (audioFrameRef.current !== null) cancelAnimationFrame(audioFrameRef.current);
@@ -198,13 +193,8 @@ export function useVoiceInterview({ messagesRef, profile, sessionId: profileSess
   }, [setInterviewState]);
 
   const setupAudio = useCallback(async () => {
-    if (!audioRef.current) { audioRef.current = document.createElement('audio'); audioRef.current.preload = 'auto'; }
     const context = audioContextRef.current && audioContextRef.current.state !== 'closed' ? audioContextRef.current : new AudioContext(); audioContextRef.current = context;
     await context.resume();
-    if (!outputAnalyserRef.current) {
-      const analyser = context.createAnalyser(); analyser.fftSize = 512; outputAnalyserRef.current = analyser;
-      mediaSourceRef.current = context.createMediaElementSource(audioRef.current); mediaSourceRef.current.connect(analyser); analyser.connect(context.destination);
-    }
     if (micStreamRef.current && !micAnalyserRef.current) {
       const analyser = context.createAnalyser(); analyser.fftSize = 512; micAnalyserRef.current = analyser;
       micSourceRef.current = context.createMediaStreamSource(micStreamRef.current); micSourceRef.current.connect(analyser);
@@ -419,10 +409,7 @@ export function useVoiceInterview({ messagesRef, profile, sessionId: profileSess
 
   // Mic-level barge-in and audio output lip-sync share a single animation loop.
   const audioLoop = useCallback(() => {
-    if (speakingRef.current) {
-      const out = outputAnalyserRef.current;
-      if (out) { const data = new Uint8Array(out.fftSize); out.getByteTimeDomainData(data); let sum = 0; for (const v of data) { const x = (v - 128) / 128; sum += x * x; } mouthLevelRef.current = Math.min(1, Math.sqrt(sum / data.length) * 5); if (mouthLevelRef.current > 0.035 && performance.now() - lastMouthTickRef.current > 110) { lastMouthTickRef.current = performance.now(); setWordTick((tick) => tick + 1); } }
-    } else mouthLevelRef.current = 0;
+    mouthLevelRef.current = speakingRef.current ? 0.12 + (Math.sin(performance.now() / 90) + 1) * 0.18 : 0;
     const mic = micAnalyserRef.current;
     if (speakingRef.current && !calibrationRef.current && mic && !mutedRef.current) {
       const data = new Uint8Array(mic.fftSize); mic.getByteTimeDomainData(data); let sum = 0; for (const v of data) { const x = (v - 128) / 128; sum += x * x; }
@@ -443,7 +430,7 @@ export function useVoiceInterview({ messagesRef, profile, sessionId: profileSess
     if (sessionActiveRef.current) audioFrameRef.current = requestAnimationFrame(audioLoop);
     else { audioFrameRef.current = null; mouthLevelRef.current = 0; }
   }, [interruptVera]);
-  const speakReply = useCallback(async (reply: string, resumeAfter = true, preparedAudio?: Promise<Blob>) => {
+  const speakReply = useCallback(async (reply: string, resumeAfter = true) => {
     const sessionId = sessionIdRef.current;
     if (!sessionActiveRef.current) return;
     const chunks = sentenceChunks(cleanSpeechText(reply));
@@ -457,8 +444,9 @@ export function useVoiceInterview({ messagesRef, profile, sessionId: profileSess
     const watchdogMs = cleanSpeechText(reply).split(/\s+/).length * 500 + 4000;
     if (watchdogRef.current) window.clearTimeout(watchdogRef.current);
     watchdogRef.current = resumeAfter ? window.setTimeout(() => { if (generation === speechGenerationRef.current && speakingRef.current) { console.warn('[Vera] speaking watchdog fired'); cancelPlayback(); resumeListening(); } }, watchdogMs) : null;
+    const browserVoice = tts.getBrowserVoice();
     const logPlayback = (voice: string, lang: string) => {
-      const detail = { engine: tts.engine === 'kokoro' ? 'Kokoro' : 'Browser', voice, lang, at: performance.now() };
+      const detail = { engine: 'Browser', voice, lang, at: performance.now() };
       console.info('[Vera] speech started:', detail);
       if (!timingRef.current.firstAudioLogged) {
         timingRef.current.firstAudioLogged = true;
@@ -473,119 +461,40 @@ export function useVoiceInterview({ messagesRef, profile, sessionId: profileSess
         console.info('[Vera timing] turn summary', { turn: timingRef.current.turnId, endToAudioMs: ms, turnsMeasured: timingRef.current.turnAudioMs.length, averageEndToAudioMs: averageMs });
       }
     };
-    const browserVoice = tts.engine === 'browser' ? tts.getBrowserVoice() : null;
-    let kokoro = tts.engine === 'kokoro';
-    let index = 0;
-    const audio = audioRef.current;
-    let currentUrl: string | null = null;
     try {
-      if (kokoro) await setupAudio();
-      if (!sessionActiveRef.current || sessionIdRef.current !== sessionId) return;
-      const preparedOpening = openingAudioRef.current?.sentence === chunks[0] ? openingAudioRef.current.audio : null;
-      let nextAudio = kokoro ? (preparedAudio || preparedOpening || tts.synthesize(chunks[0])) : Promise.resolve(null);
-      while (index < chunks.length && generation === speechGenerationRef.current && sessionActiveRef.current && sessionIdRef.current === sessionId) {
+      for (let index = 0; index < chunks.length && generation === speechGenerationRef.current && sessionActiveRef.current && sessionIdRef.current === sessionId; index += 1) {
         const sentence = chunks[index];
         currentSentenceRef.current = sentence;
         if (!headphonesRef.current && speakerFirstSentenceRef.current) speakerBaselineEndRef.current = performance.now() + Math.min(4500, Math.max(1800, sentence.split(/\s+/).length * 300));
-        if (!kokoro) {
-          const playback = new Promise<void>((resolve, reject) => {
-            tts.speakBrowser(sentence, browserVoice, () => {
-              if (!sessionActiveRef.current || sessionIdRef.current !== sessionId || generation !== speechGenerationRef.current) return;
-              speakingRef.current = true; setInterviewState('speaking');
-              logPlayback(browserVoice?.name || tts.actualVoice, browserVoice?.lang || 'en');
-              if (audioFrameRef.current === null) audioFrameRef.current = requestAnimationFrame(audioLoop);
-            }, resolve, (reason) => reject(new Error(reason)), () => setWordTick((tick) => tick + 1));
-          });
-          await waitForPlayback(playback, watchdogMs, () => {
-            console.warn('[Vera] browser speech completion watchdog fired; resuming interview');
-            cancelPlayback();
-            if (resumeAfter) resumeListening();
-          });
-        } else {
-          const blob = await nextAudio;
-          if (generation !== speechGenerationRef.current) return;
-          if (!sessionActiveRef.current || sessionIdRef.current !== sessionId) return;
-          if (!(blob instanceof Blob) || !audio) throw new Error('Kokoro did not return playable audio');
-          currentUrl = URL.createObjectURL(blob); objectUrlsRef.current.add(currentUrl);
-          index += 1;
-          nextAudio = index < chunks.length ? tts.synthesize(chunks[index]) : Promise.resolve(null);
-          audio.src = currentUrl; audio.currentTime = 0;
-          const playbackEnded = new Promise<void>((resolve, reject) => {
-            audio.onended = () => resolve();
-            audio.onerror = () => reject(new Error('Kokoro audio playback failed'));
-          });
-          const playback = (async () => {
-            await audio.play();
+        const playback = new Promise<void>((resolve, reject) => {
+          tts.speakBrowser(sentence, browserVoice, () => {
             if (!sessionActiveRef.current || sessionIdRef.current !== sessionId || generation !== speechGenerationRef.current) return;
             speakingRef.current = true; setInterviewState('speaking');
-            tts.markKokoroPlayed(tts.actualVoice);
-            logPlayback(tts.actualVoice, 'en-US');
-            await playbackEnded;
-          })();
-          await waitForPlayback(playback, watchdogMs, () => {
-            console.warn('[Vera] Kokoro audio completion watchdog fired; resuming interview');
-            audio.onended = null; audio.onerror = null;
-            audio.pause();
-            cancelPlayback();
-            if (resumeAfter) resumeListening();
-          });
-          if (!sessionActiveRef.current || sessionIdRef.current !== sessionId || generation !== speechGenerationRef.current) return;
-          URL.revokeObjectURL(currentUrl); objectUrlsRef.current.delete(currentUrl); currentUrl = null;
-          if (nextAudio) void nextAudio.catch(() => {});
-        }
-        if (!kokoro) index += 1;
+            logPlayback(browserVoice?.name || tts.actualVoice, browserVoice?.lang || 'en');
+            if (audioFrameRef.current === null) audioFrameRef.current = requestAnimationFrame(audioLoop);
+          }, () => { speakingRef.current = false; mouthLevelRef.current = 0; resolve(); }, (reason) => reject(new Error(reason)), () => setWordTick((tick) => tick + 1));
+        });
+        await waitForPlayback(playback, watchdogMs, () => {
+          console.warn('[Vera] browser speech completion watchdog fired; resuming interview');
+          cancelPlayback();
+          if (resumeAfter) resumeListening();
+        });
+        if (generation !== speechGenerationRef.current || !sessionActiveRef.current || sessionIdRef.current !== sessionId) return;
         if (!headphonesRef.current && speakerFirstSentenceRef.current) {
           speakerEchoBaselineRef.current = speakerBaselineSamplesRef.current ? speakerBaselineSumRef.current / speakerBaselineSamplesRef.current : noiseFloorRef.current;
           speakerFirstSentenceRef.current = false; speakerBaselineReadyRef.current = true;
         }
         lastPlayedSentenceRef.current = sentence;
-        if (index < chunks.length && !kokoro && !await waitForSession(200, sessionId)) return;
+        if (index < chunks.length - 1 && !await waitForSession(200, sessionId)) return;
       }
       if (resumeAfter && generation === speechGenerationRef.current && sessionActiveRef.current && sessionIdRef.current === sessionId) resumeListening();
     } catch (error) {
       if (generation !== speechGenerationRef.current || !sessionActiveRef.current || sessionIdRef.current !== sessionId) return;
-      console.error('[Vera] Kokoro speech failed; switching to browser voice:', error);
-      const fallbackStart = Math.max(0, index - (currentUrl ? 1 : 0));
-      if (currentUrl) { URL.revokeObjectURL(currentUrl); objectUrlsRef.current.delete(currentUrl); }
-      audio?.pause();
-      kokoro = false;
-      const fallbackVoice = await tts.useBrowserFallback(error instanceof Error ? error.message : String(error));
-      if (!sessionActiveRef.current || sessionIdRef.current !== sessionId || generation !== speechGenerationRef.current) return;
-      if (!fallbackVoice && !('speechSynthesis' in window)) { if (resumeAfter) resumeListening(); return; }
-      index = fallbackStart;
-      try {
-        while (index < chunks.length && generation === speechGenerationRef.current && sessionActiveRef.current && sessionIdRef.current === sessionId) {
-          const sentence = chunks[index++]; currentSentenceRef.current = sentence;
-          const playback = new Promise<void>((resolve, reject) => tts.speakBrowser(sentence, fallbackVoice, () => {
-            if (!sessionActiveRef.current || sessionIdRef.current !== sessionId || generation !== speechGenerationRef.current) return;
-            speakingRef.current = true; setInterviewState('speaking');
-            logPlayback(fallbackVoice?.name || 'Browser voice', fallbackVoice?.lang || 'en');
-            if (audioFrameRef.current === null) audioFrameRef.current = requestAnimationFrame(audioLoop);
-          }, resolve, (reason) => reject(new Error(reason)), () => setWordTick((tick) => tick + 1)));
-          await waitForPlayback(playback, watchdogMs, () => {
-            console.warn('[Vera] fallback speech completion watchdog fired; resuming interview');
-            cancelPlayback();
-            if (resumeAfter) resumeListening();
-          });
-          if (index < chunks.length && !await waitForSession(200, sessionId)) return;
-        }
-        if (resumeAfter && generation === speechGenerationRef.current && sessionActiveRef.current && sessionIdRef.current === sessionId) resumeListening();
-      } catch (browserError) { if (sessionActiveRef.current && sessionIdRef.current === sessionId) { console.error('[Vera] browser speech failed:', browserError); if (resumeAfter) resumeListening(); } }
+      speakingRef.current = false; mouthLevelRef.current = 0;
+      console.error('[Vera] browser speech failed:', error);
+      if (resumeAfter) resumeListening();
     }
-  }, [audioLoop, cancelPlayback, resumeListening, setInterviewState, setupAudio, tts, waitForSession]);
-
-  useEffect(() => {
-    if (!profile) { openingAudioRef.current = null; return; }
-    const greeting = openingGreeting(profile);
-    const firstSentence = sentenceChunks(cleanSpeechText(greeting))[0];
-    if (!firstSentence) return;
-    const preparedAt = performance.now();
-    const audio = tts.synthesize(firstSentence);
-    openingAudioRef.current = { sentence: firstSentence, audio };
-    console.info('[Vera timing] opening line synthesis started', { at: preparedAt });
-    void audio.then(() => console.info('[Vera timing] opening line audio cached', { ms: Math.round(performance.now() - preparedAt), at: performance.now() }))
-      .catch((error) => console.info('[Vera timing] opening line pre-synthesis unavailable:', error));
-  }, [profile, tts.synthesize]);
+  }, [audioLoop, cancelPlayback, resumeListening, setInterviewState, tts, waitForSession]);
 
   const processUserInput = useCallback(async (text: string) => {
     const sessionId = sessionIdRef.current;
@@ -631,10 +540,9 @@ export function useVoiceInterview({ messagesRef, profile, sessionId: profileSess
         console.info('[Vera timing] first sentence ready', { msFromTurnEnd: Math.round(performance.now() - timingRef.current.turnEndedAt), at: performance.now() });
       }
       streamedReply = `${streamedReply} ${cleanSentence}`.trim();
-      const prepared = tts.engine === 'kokoro' ? tts.synthesize(cleanSentence) : undefined;
       playback = playback.then(() => {
         if (!sessionActiveRef.current || sessionIdRef.current !== sessionId || streamSequenceRef.current !== streamSequence) return;
-        return speakReply(cleanSentence, false, prepared);
+        return speakReply(cleanSentence, false);
       });
     };
     try {
@@ -726,7 +634,7 @@ export function useVoiceInterview({ messagesRef, profile, sessionId: profileSess
       window.clearTimeout(timeout); chatTimeoutsRef.current.delete(timeout);
       if (inFlightTurnKeyRef.current === turnRequestKey) inFlightTurnKeyRef.current = null;
     }
-  }, [addTranscript, error, messagesRef, resumeListening, setError, setInterviewState, speakReply, tts.engine, tts.synthesize]);
+  }, [addTranscript, error, messagesRef, resumeListening, setError, setInterviewState, speakReply]);
   pendingTurnRef.current = (text) => { void processUserInput(text); };
 
   const submitNow = useCallback(() => {
@@ -849,7 +757,7 @@ export function useVoiceInterview({ messagesRef, profile, sessionId: profileSess
     silenceTimerRef.current = null; restartTimerRef.current = null; watchdogRef.current = null; thinkingWatchdogRef.current = null;
     resumeTimerRef.current = null; countdownTimerRef.current = null; micActivityIntervalRef.current = null;
     recognitionRefreshRef.current = null; listeningWatchdogIntervalRef.current = null;
-    calibrationRef.current = false; cancelPlayback(); tts.cancelPending(true);
+    calibrationRef.current = false; cancelPlayback();
     const recognition = recognitionRef.current;
     if (recognition) {
       recognition.onstart = null; recognition.onaudiostart = null; recognition.onspeechstart = null;
@@ -859,15 +767,13 @@ export function useVoiceInterview({ messagesRef, profile, sessionId: profileSess
     recognitionRef.current = null; runningRef.current = false; startingRef.current = false;
     micStreamRef.current?.getTracks().forEach((track) => track.stop()); micStreamRef.current = null;
     try { micSourceRef.current?.disconnect(); } catch { /* already disconnected */ } micSourceRef.current = null; micAnalyserRef.current = null;
-    try { mediaSourceRef.current?.disconnect(); } catch { /* already disconnected */ } mediaSourceRef.current = null; outputAnalyserRef.current = null;
-    audioRef.current = null;
     const context = audioContextRef.current; audioContextRef.current = null; if (context && context.state !== 'closed') void context.close();
     pendingTextRef.current = ''; interimRef.current = ''; setHasSpeechPending(false); setPauseCountdown(0); setHeardText(''); setRetryingChat(false);
     inFlightTurnKeyRef.current = null;
     aboveThresholdSinceRef.current = null; speakerFirstSentenceRef.current = false; speakerBaselineReadyRef.current = false;
     if (!options.quiet) setInterviewState('idle'); else stateRef.current = 'idle';
     return transcriptRef.current;
-  }, [cancelPlayback, setInterviewState, tts.cancelPending]);
+  }, [cancelPlayback, setInterviewState]);
 
   const stop = endInterview;
 
@@ -884,7 +790,6 @@ export function useVoiceInterview({ messagesRef, profile, sessionId: profileSess
     wordTick, mouthLevel: mouthLevelRef.current, pauseCountdown, pausePatience, setPausePatience, hasSpeechPending,
     voiceEngine: tts.engine as VoiceEngine, actualVoice: tts.actualVoiceLabel, selectedVoiceName: tts.selectedVoiceName,
     setSelectedVoiceName: tts.setSelectedVoiceName, voiceOptions: tts.options as VoiceOption[],
-    voiceLoading: tts.loading, voiceProgress: tts.progress, browserFallback: tts.fallback,
     noFemaleVoice: tts.noFemaleVoice, retryingChat,
   };
 }

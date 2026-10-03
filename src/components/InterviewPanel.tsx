@@ -85,7 +85,6 @@ function buildBasicProfileFromText(text: string): CandidateProfile {
 }
 
 export function InterviewPanel() {
-  const [voiceNoteDismissed, setVoiceNoteDismissed] = useState(false);
   const messagesRef = useRef<{ role: string; content: string }[]>([]);
   const sessionIdRef = useRef(typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `vera-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 
@@ -170,7 +169,7 @@ export function InterviewPanel() {
 
   const handleReportProgress = useCallback((step: string) => setReportProgress(step), []);
 
-  const { state, transcript, error, heardText, hasSpeechPending, pauseCountdown, pausePatience, setPausePatience, wordTick, mouthLevel, actualVoice, voiceOptions, selectedVoiceName, setSelectedVoiceName, voiceLoading, voiceProgress, browserFallback, noFemaleVoice, retryingChat, isSupported, start, endInterview, generateReport, unlockAudio, submitNow, interrupt } = useVoiceInterview({
+  const { state, transcript, error, heardText, hasSpeechPending, pauseCountdown, pausePatience, setPausePatience, wordTick, mouthLevel, actualVoice, voiceOptions, selectedVoiceName, setSelectedVoiceName, noFemaleVoice, retryingChat, isSupported, start, endInterview, generateReport, unlockAudio, submitNow, interrupt } = useVoiceInterview({
     headphonesMode,
     isMuted,
     messagesRef,
@@ -594,9 +593,6 @@ export function InterviewPanel() {
                 selectedVoiceName={selectedVoiceName}
                 voiceOptions={voiceOptions}
                 actualVoice={actualVoice}
-                voiceLoading={voiceLoading}
-                voiceProgress={voiceProgress}
-                browserFallback={browserFallback}
                 noFemaleVoice={noFemaleVoice}
                 canStart={Boolean(profile && micStatus === 'ready' && isSupported && !parsing)}
                 startReason={!profile ? 'Add your resume or paste your experience to continue.' : micStatus !== 'ready' ? 'Check your microphone to continue.' : !isSupported ? 'Use a supported browser to start the voice interview.' : 'Preparing your interview.'}
@@ -680,7 +676,6 @@ export function InterviewPanel() {
                 )}
                 {error && <p role="status" className="w-full max-w-2xl mt-2 px-4 text-sm text-rose-200">{error}</p>}
                 {retryingChat && <p role="status" className="w-full max-w-2xl mt-1 px-4 text-xs text-text-muted">Give me a second…</p>}
-                {browserFallback && !voiceNoteDismissed && <p role="status" className="w-full max-w-2xl mt-1 flex items-center gap-2 px-4 text-xs text-text-muted">Using your browser’s voice. Edge or a faster laptop gives a more natural one.<button type="button" onClick={() => setVoiceNoteDismissed(true)} className="min-h-8 rounded px-1 text-text-secondary underline">Dismiss</button></p>}
                 {noFemaleVoice && <p role="status" className="w-full max-w-2xl mt-1 px-4 text-xs text-text-muted">No female voice found on this device. Try Microsoft Edge.</p>}
                 {state === 'speaking' && !headphonesMode && <p role="status" className="mt-2 rounded-full border border-white/[.07] bg-black/20 px-3 py-1.5 text-xs text-text-muted">Vera is speaking, mic paused.</p>}
                 {state === 'speaking' && <button type="button" onClick={interrupt} className="mt-2 min-h-11 rounded-full border border-lime-300/25 bg-lime-300/[.06] px-5 text-sm text-lime-100 hover:bg-lime-300/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lime-300">Interrupt</button>}

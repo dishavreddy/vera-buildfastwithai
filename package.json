@@ -19,7 +19,6 @@
     "cors": "^2.8.5",
     "express": "^4.21.0",
     "framer-motion": "^13.4.6",
-    "kokoro-js": "^1.2.1",
     "lucide-react": "^0.446.0",
     "multer": "^2.4.0",
     "pdf-parse": "^2.4.5",

@@ -5,7 +5,6 @@ import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Chip } from '@/components/ui/Chip';
 import { MicMeter, Stepper, Tag } from '@/components/ui/Primitives';
-import { useState } from 'react';
 
 type MicCheckState = 'idle' | 'checking' | 'ready' | 'failed';
 interface LandingScreenProps {
@@ -20,9 +19,6 @@ interface LandingScreenProps {
   selectedVoiceName: string;
   voiceOptions: { value: string; label: string; female: boolean }[];
   actualVoice: string;
-  voiceLoading: boolean;
-  voiceProgress: number;
-  browserFallback: boolean;
   noFemaleVoice: boolean;
   canStart: boolean;
   startReason: string;
@@ -36,10 +32,9 @@ interface LandingScreenProps {
 
 export function LandingScreen({
   serverWarming, profile, parsing, parseError, pasteText, micStatus, micLevel, isSupported, selectedVoiceName,
-  voiceOptions, actualVoice, voiceLoading, voiceProgress, browserFallback, noFemaleVoice,
+  voiceOptions, actualVoice, noFemaleVoice,
   canStart, startReason, onFileSelected, onPasteChange, onPasteContinue, onVoiceChange, onMicCheck, onStart,
 }: LandingScreenProps) {
-  const [dismissFallback, setDismissFallback] = useState(false);
   const stepCurrent = canStart ? 2 : profile ? 1 : 0;
   return (
     <div className="w-full">
@@ -133,7 +128,7 @@ export function LandingScreen({
               </div>
 
               <div className="flex flex-col gap-4 border-t border-white/[.08] pt-6 sm:flex-row sm:items-end sm:justify-between">
-                <div className="min-w-0 flex-1"><label htmlFor="vera-voice-select" className="font-micro text-text-muted">Vera’s voice</label><select id="vera-voice-select" value={selectedVoiceName} onChange={(event) => onVoiceChange(event.target.value)} className="mt-2 min-h-11 w-full rounded-2xl border border-white/10 bg-[#111] px-4 text-sm text-text-primary focus:border-lime-300/30 focus:outline-none focus:ring-2 focus:ring-lime-300/20">{voiceOptions.map((voice) => <option key={voice.value} value={voice.value} disabled={!voice.female && voiceOptions.some((option) => option.female)}>{voice.label}</option>)}</select><p className="mt-2 text-xs text-text-muted">Last played: {actualVoice}</p>{voiceLoading && <p role="status" className="mt-1 text-xs text-lime-100">Warming up Vera’s voice… {voiceProgress}%</p>}{browserFallback && !dismissFallback && <p role="status" className="mt-1 flex items-center gap-2 text-xs text-text-muted">Using your browser’s voice. Edge or a faster laptop gives a more natural one.<button type="button" onClick={() => setDismissFallback(true)} className="min-h-8 rounded px-1 text-text-secondary underline">Dismiss</button></p>}{noFemaleVoice && <p role="status" className="mt-1 text-xs text-text-muted">No female voice found on this device. Try Microsoft Edge.</p>}</div>
+                <div className="min-w-0 flex-1"><label htmlFor="vera-voice-select" className="font-micro text-text-muted">Vera’s voice</label><select id="vera-voice-select" value={selectedVoiceName} onChange={(event) => onVoiceChange(event.target.value)} className="mt-2 min-h-11 w-full rounded-2xl border border-white/10 bg-[#111] px-4 text-sm text-text-primary focus:border-lime-300/30 focus:outline-none focus:ring-2 focus:ring-lime-300/20">{voiceOptions.map((voice) => <option key={voice.value} value={voice.value} disabled={!voice.female && voiceOptions.some((option) => option.female)}>{voice.label}</option>)}</select><p className="mt-2 text-xs text-text-muted">Last played: {actualVoice}</p>{noFemaleVoice && <p role="status" className="mt-1 text-xs text-text-muted">No female voice found on this device. Try Microsoft Edge.</p>}</div>
                 <div className="w-full sm:w-auto sm:min-w-[210px]" title={canStart ? 'Start your personalized interview' : startReason}><Button variant="primary" size="lg" className="w-full" onClick={onStart} disabled={!canStart} aria-label="Begin interview"><Mic className="h-4 w-4"/>Begin interview<ArrowRight className="h-4 w-4"/></Button></div>
               </div>
               {!canStart && <p className="-mt-2 text-xs text-text-muted">{startReason}</p>}
