@@ -1,3 +1,3 @@
-import { expressRoute } from './_express.js';
-
-export default expressRoute('/api/health');
+export default function health(_req, res) {
+  res.status(200).json({ status: 'ok' });
+}

@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
+import { CanvasFactory } from 'pdf-parse/worker';
 import { PDFParse } from 'pdf-parse';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
@@ -383,7 +384,7 @@ app.post('/api/parse-resume', uploadResumeFile, async (req, res) => {
   try {
     console.info(`[Vera upload ${requestId}] pdf-parse start`, { fileSize: req.file.size });
     const uint8Array = new Uint8Array(req.file.buffer);
-    parser = new PDFParse({ data: uint8Array });
+    parser = new PDFParse({ data: uint8Array, CanvasFactory });
     const textResult = await parser.getText();
     const text = textResult?.text?.trim() || '';
     console.info(`[Vera upload ${requestId}] pdf-parse end`, { durationMs: Date.now() - parseStartedAt, extractedCharacters: text.length });
